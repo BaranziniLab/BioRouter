@@ -4,7 +4,6 @@ use biorouter::scheduler_trait::SchedulerTrait;
 use biorouter::session::SessionManager;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -786,7 +785,6 @@ impl Drop for ObserverSlot {
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) agent_manager: Arc<AgentManager>,
-    pub workflow_file_hash_map: Arc<Mutex<HashMap<String, PathBuf>>>,
     /// Tracks sessions that have already emitted workflow telemetry to prevent double counting.
     workflow_session_tracker: Arc<Mutex<HashSet<String>>>,
     /// Sessions with an interactive turn in flight, mapped to that turn's state.
@@ -813,7 +811,6 @@ impl AppState {
 
         Ok(Arc::new(Self {
             agent_manager,
-            workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             active_turns: Arc::new(StdMutex::new(TurnRegistry::default())),
             observer_streams: Arc::new(AtomicUsize::new(0)),
@@ -837,7 +834,7 @@ impl AppState {
     /// preamble in `workspace/services.rs`'s tests.
     #[cfg(test)]
     pub(crate) async fn new_with_knowledge_root(
-        knowledge_root: PathBuf,
+        knowledge_root: std::path::PathBuf,
     ) -> anyhow::Result<Arc<AppState>> {
         let agent_manager = AgentManager::instance().await?;
         let tunnel_manager = Arc::new(TunnelManager::new());
@@ -845,7 +842,6 @@ impl AppState {
 
         Ok(Arc::new(Self {
             agent_manager,
-            workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             active_turns: Arc::new(StdMutex::new(TurnRegistry::default())),
             observer_streams: Arc::new(AtomicUsize::new(0)),
@@ -1717,11 +1713,6 @@ impl AppState {
 
     pub fn session_manager(&self) -> &SessionManager {
         self.agent_manager.session_manager()
-    }
-
-    pub async fn set_workflow_file_hash_map(&self, hash_map: HashMap<String, PathBuf>) {
-        let mut map = self.workflow_file_hash_map.lock().await;
-        *map = hash_map;
     }
 
     pub async fn mark_workflow_run_if_absent(&self, session_id: &str) -> bool {

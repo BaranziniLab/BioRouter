@@ -120,6 +120,17 @@ describe('CreateWorkflowFromSessionModal', () => {
           visible: ['research-kb'],
         },
         skills: ['literature-review'],
+        // The generator really does produce all three of these — settings comes
+        // from Agent::create_workflow's provider/model pin, author from the
+        // route. The modal dropped every one of them, and this fixture is why
+        // nothing noticed: it did not contain them, so no assertion could.
+        settings: {
+          biorouter_provider: 'anthropic',
+          biorouter_model: 'claude-opus-5',
+          temperature: 0.3,
+        },
+        author: { contact: 'someone', metadata: undefined },
+        version: '1.0.0',
       },
       error: undefined,
     };
@@ -358,6 +369,46 @@ describe('CreateWorkflowFromSessionModal', () => {
             visible: ['research-kb'],
           },
           skills: ['literature-review'],
+        }),
+        null
+      );
+    });
+
+    /**
+     * The generated `settings` block reaches the saved workflow.
+     *
+     * The modal read `formData.settings` when building the object but never
+     * PREFILLED the form from the generated workflow, so the provider/model pin
+     * the generator produces was silently dropped — the same conversation gave
+     * a pinned workflow through the CLI and an unpinned one here.
+     * CreateEditWorkflowModal has always prefilled settings; the two disagreed.
+     */
+    it('keeps the generated settings pin, author and version when saving', async () => {
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('create-workflow-button')).toBeEnabled();
+        },
+        { timeout: 2000 }
+      );
+
+      await user.click(screen.getByTestId('create-workflow-button'));
+
+      await waitFor(() => {
+        expect(mockSaveWorkflow).toHaveBeenCalled();
+      });
+
+      expect(mockSaveWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: {
+            biorouter_provider: 'anthropic',
+            biorouter_model: 'claude-opus-5',
+            temperature: 0.3,
+          },
+          author: { contact: 'someone', metadata: undefined },
+          version: '1.0.0',
         }),
         null
       );

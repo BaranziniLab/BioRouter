@@ -42,6 +42,8 @@ export default function CreateWorkflowFromSessionModal({
     extensions?: ExtensionConfig[];
     knowledgeBases?: WorkflowKnowledgeBases;
     skills?: string[];
+    author?: Workflow['author'];
+    version?: string;
   }>({});
   const resourceEditsRef = useRef({
     extensions: false,
@@ -170,6 +172,29 @@ export default function CreateWorkflowFromSessionModal({
             form.setFieldValue('instructions', workflow.instructions || '');
             form.setFieldValue('activities', workflow.activities || []);
             form.setFieldValue('parameters', workflow.parameters || []);
+            form.setFieldValue('prompt', workflow.prompt || '');
+
+            // The generator DOES produce a settings block — it pins the
+            // provider, model and temperature the workflow was captured under.
+            // Not prefilling it here silently dropped that pin, so the same
+            // conversation yielded a pinned workflow through the CLI and an
+            // unpinned one through this modal. CreateEditWorkflowModal has
+            // always prefilled settings; the two disagreed.
+            if (workflow.settings) {
+              form.setFieldValue('settings', {
+                biorouter_provider: workflow.settings.biorouter_provider ?? undefined,
+                biorouter_model: workflow.settings.biorouter_model ?? undefined,
+                temperature: workflow.settings.temperature ?? undefined,
+              });
+            }
+
+            // `author` and `version` have no form fields — they are facts about
+            // the capture, not things the user edits — so they are held here and
+            // written back on save. Without this the modal dropped both, and the
+            // author is the one field the HTTP route goes out of its way to
+            // attach.
+            generatedResourcesRef.current.author = workflow.author ?? undefined;
+            generatedResourcesRef.current.version = workflow.version ?? undefined;
 
             if (workflow.response?.json_schema) {
               form.setFieldValue(
@@ -356,6 +381,9 @@ export default function CreateWorkflowFromSessionModal({
             : undefined,
         knowledge_bases: knowledgeBases,
         skills: selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
+        // Captured at generation time; see generatedResourcesRef above.
+        author: generatedResources.author,
+        ...(generatedResources.version ? { version: generatedResources.version } : {}),
       };
 
       let workflowId = await saveWorkflow(workflow, null);

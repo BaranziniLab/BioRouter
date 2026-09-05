@@ -1,5 +1,5 @@
-//! The `platform__*` tools: the four capabilities the **Agent** owns rather
-//! than any extension.
+//! The `platform__*` tools: the capabilities the **Agent** owns rather than any
+//! extension.
 //!
 //! They are advertised by [`Agent::list_tools_for`] and dispatched by
 //! [`Agent::dispatch_tool_call`], and they exist nowhere in the
@@ -18,7 +18,7 @@
 //! Compose those two and the platform tools were reachable from nowhere (issue
 //! #141): dropped from the roster, absent from the catalogue, so
 //! `platform.ingest_source` answered `Module not found: platform`. The exemption
-//! calls [`is_platform_tool_name`] — which IS a hand-written list of four names,
+//! calls [`is_platform_tool_name`] — which IS a hand-written list of names,
 //! [`PLATFORM_TOOL_NAMES`]. The property being bought is not "no list"; it is
 //! ONE list instead of a second copy at each gate, so a fifth platform tool is
 //! covered everywhere the day it is added to that one.
@@ -34,8 +34,9 @@ pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule"
 pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conversation";
 pub const PLATFORM_INGEST_SOURCE_TOOL_NAME: &str = "platform__ingest_source";
 pub const PLATFORM_READ_SESSION_BLOB_TOOL_NAME: &str = "platform__read_session_blob";
+pub const PLATFORM_MANAGE_WORKFLOW_TOOL_NAME: &str = "platform__manage_workflow";
 
-/// The extension key the four tools are advertised under. Not a registered
+/// The extension key these tools are advertised under. Not a registered
 /// extension — `PLATFORM_EXTENSIONS` has no `platform` entry and the
 /// `ExtensionManager` map has no `platform` key — but it is the prefix the
 /// model sees, and the name `list_tools(extension_name = Some("platform"))`
@@ -44,13 +45,14 @@ pub const PLATFORM_EXTENSION_NAME: &str = "platform";
 
 /// Every `platform__*` tool, in advertisement order.
 ///
-/// One list, so a reader can never be built from three of the four. Its
-/// membership is asserted against the constants below.
+/// One list, so a reader can never be built from a subset. Its membership is
+/// asserted against the constants below.
 pub const PLATFORM_TOOL_NAMES: &[&str] = &[
     PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
     PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
 ];
 
 /// Is this the name of a tool the **agent loop** dispatches?
@@ -58,13 +60,13 @@ pub const PLATFORM_TOOL_NAMES: &[&str] = &[
 /// Deliberately an exact-name test rather than a `platform__` prefix match: the
 /// prefix is not reserved (an installed extension normalizing to `platform`
 /// would take it), and every gate that asks this question is granting a tool a
-/// path around the extension manager. Only the four names this file defines,
-/// and dispatches, get that.
+/// path around the extension manager. Only the names this file defines, and
+/// dispatches, get that.
 pub fn is_platform_tool_name(name: &str) -> bool {
     PLATFORM_TOOL_NAMES.contains(&name)
 }
 
-/// Which of the four the caller's session may see.
+/// Which of them the caller's session may see.
 ///
 /// Each field is one gate, sampled by the Agent — the only thing that can read
 /// all three — and passed in.
@@ -90,6 +92,22 @@ pub struct PlatformToolGates {
     /// the payloads are spliced back in at load time, so the model never sees a
     /// stub and would have nothing to read back.
     pub session_blobs: bool,
+    /// Workflow management is reachable.
+    ///
+    /// ⚠ Unconditionally true today, and the field exists anyway. Not
+    /// speculation: the alternative is a fifth `if` at the bottom of
+    /// `Agent::list_tools_for`, which is the exact shape issue #141 took — the
+    /// roster and `code_execution`'s catalogue disagreeing because the same
+    /// decision was written in two places. A condition added later belongs in
+    /// `Agent::platform_tool_gates` beside the other three, where every reader
+    /// of this struct already looks.
+    ///
+    /// Note this is NOT the approval gate. Whether a person can be asked is a
+    /// property of the daemon, not of the agent, so it narrows the tool's
+    /// *action list* inside `manage_workflow_tool` rather than withholding the
+    /// tool: `list` and `read` are useful on a `biorouter serve` daemon that can
+    /// never approve a write.
+    pub workflows: bool,
 }
 
 impl PlatformToolGates {
@@ -98,9 +116,9 @@ impl PlatformToolGates {
     ///
     /// ONE assembly. It has a single caller today — the Agent's tool list — and
     /// the rule for any future one is that it comes here rather than pushing its
-    /// own copy: the four `if`s used to be four separate pushes at the bottom of
+    /// own copy: these `if`s used to be separate pushes at the bottom of
     /// `Agent::list_tools_for`, which is how the model's roster and
-    /// `code_execution`'s view of the world came to disagree about the same four
+    /// `code_execution`'s view of the world came to disagree about the same
     /// tools (issue #141).
     pub fn tools(self, extension_name: Option<&str>) -> Vec<Tool> {
         if !matches!(extension_name, None | Some(PLATFORM_EXTENSION_NAME)) {
@@ -116,6 +134,11 @@ impl PlatformToolGates {
         }
         if self.session_blobs {
             tools.push(read_session_blob_tool());
+        }
+        if self.workflows {
+            tools.push(manage_workflow_tool(
+                crate::pending_user_action::user_proof_available(),
+            ));
         }
         tools
     }
@@ -288,6 +311,97 @@ pub fn ingest_source_tool() -> Tool {
         title: Some("Ingest documents into knowledge base".to_string()),
         read_only_hint: Some(false),
         destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(false),
+    })
+}
+
+/// Manage the user's saved workflows: list, read, generate from this chat, save,
+/// delete, validate, share and schedule.
+///
+/// ⚠ The `enum` this builds is DERIVED from
+/// [`crate::agents::workflow_tool::available_actions`], not written out here.
+/// The two used to be the same kind of hand-copied pair that issue #141 was:
+/// a schema listing an action the handler refuses is a tool advertising a verb
+/// that always fails, and a handler arm the schema omits is a capability the
+/// model never learns exists.
+///
+/// `can_ask_a_person` is `pending_user_action::user_proof_available()`, sampled
+/// by the caller. On a `biorouter serve` daemon it is false forever — no
+/// proof-of-user digest is ever installed — so the four mutating actions are
+/// absent from the enum and the description says why, rather than leaving the
+/// model to discover it by being refused (SD-8).
+pub fn manage_workflow_tool(can_ask_a_person: bool) -> Tool {
+    let actions = crate::agents::workflow_tool::available_actions(can_ask_a_person);
+    let action_values: Vec<serde_json::Value> = actions
+        .iter()
+        .map(|action| serde_json::Value::String((*action).to_string()))
+        .collect();
+
+    let mutation_note = if can_ask_a_person {
+        "Saving, deleting, importing and scheduling ask the user to approve the \
+         change first, and show them exactly what it is."
+    } else {
+        "This Biorouter cannot ask the user to approve anything (it is a browser \
+         session), so saving, deleting, importing and scheduling are not available \
+         here. Reading and generating still work; tell the user to make changes in \
+         the desktop app or with the `biorouter` command."
+    };
+
+    let description = format!(
+        "Manage the user's saved Biorouter workflows.\n\n\
+         A workflow is a saved, reusable setup for a chat: instructions, the \
+         extensions and knowledge bases it needs, the skills it uses, and \
+         optionally a starting prompt and parameters. Use this whenever the user \
+         talks about their workflows, agents or saved setups — \"what workflows do \
+         I have\", \"turn this chat into a workflow\", \"delete the old report one\", \
+         \"run this every Monday\".\n\n\
+         Actions:\n\
+         - \"list\": every saved workflow, with its id, title and slash command. Do \
+         this first — every other action names a workflow by that id (its exact \
+         title works too).\n\
+         - \"read\": the full YAML of one workflow.\n\
+         - \"generate\": build a workflow out of THIS conversation and return the \
+         draft. Saves nothing; show it to the user and save it only if they want \
+         it.\n\
+         - \"validate\": check a workflow without saving it.\n\
+         - \"export\": turn a workflow into a shareable link.\n\
+         - \"save\": write a workflow to the user's library. Pass `workflow` (YAML \
+         or an object); pass `id` as well to overwrite an existing one.\n\
+         - \"delete\": permanently remove a saved workflow.\n\
+         - \"import\": add a workflow from a shared link.\n\
+         - \"schedule\": run a saved workflow automatically on a cron schedule. \
+         Prefer this over platform__manage_schedule's \"create\", which takes a raw \
+         file path.\n\n\
+         {mutation_note}"
+    );
+
+    Tool::new(
+        PLATFORM_MANAGE_WORKFLOW_TOOL_NAME.to_string(),
+        description,
+        object!({
+            "type": "object",
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": action_values,
+                    "description": "What to do. Start with \"list\"."
+                },
+                "id": {"type": "string", "description": "Which saved workflow to act on: its id from \"list\", or its exact title"},
+                "workflow": {"description": "A workflow document, as YAML text or as an object. Used by \"save\", \"validate\" and \"export\"."},
+                "deeplink": {"type": "string", "description": "A shared workflow link, for \"import\""},
+                "cron": {"type": "string", "description": "Cron expression for \"schedule\". 5-field (minute hour day month weekday) or 6-field (with leading seconds)."},
+                "title": {"type": "string", "description": "Override the title of a workflow produced by \"generate\""}
+            }
+        }),
+    )
+    .annotate(ToolAnnotations {
+        title: Some("Manage saved workflows".to_string()),
+        read_only_hint: Some(false),
+        // "delete" removes a file the user cannot get back. The hint covers the
+        // tool, so it is set from the most dangerous action the tool can take.
+        destructive_hint: Some(can_ask_a_person),
         idempotent_hint: Some(false),
         open_world_hint: Some(false),
     })

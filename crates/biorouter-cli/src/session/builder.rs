@@ -788,14 +788,6 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         process::exit(1);
     }
 
-    agent
-        .apply_workflow_components(
-            workflow.and_then(|r| r.sub_workflows.clone()),
-            workflow.and_then(|r| r.response.clone()),
-            true,
-        )
-        .await;
-
     let new_provider = match create(&provider_name, model_config).await {
         Ok(provider) => provider,
         Err(e) => {
@@ -951,7 +943,18 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             })
             .unwrap_or_else(get_enabled_extensions)
     } else {
-        resolve_extensions_for_new_session(workflow.and_then(|r| r.extensions.as_deref()), None)
+        let mut resolved = resolve_extensions_for_new_session(
+            workflow.and_then(|r| r.extensions.as_deref()),
+            None,
+        );
+        // A workflow that declares a knowledge selection needs the Knowledge
+        // capability to honour it. The scheduler and the server both do this;
+        // the CLI did not, so `biorouter run --workflow` could load a workflow
+        // whose `knowledge_bases:` key had nowhere to land.
+        if let Some(workflow) = workflow {
+            biorouter::workflow::runtime::ensure_required_extensions(workflow, &mut resolved);
+        }
+        resolved
     };
 
     let cli_flag_extensions_to_load = parse_cli_flag_extensions(
@@ -1022,6 +1025,46 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     if let Some(additional_prompt) = session_config.additional_system_prompt {
         session.agent.extend_system_prompt(additional_prompt).await;
+    }
+
+    // Install the workflow through the SAME path the desktop and the scheduler
+    // use. This used to be a bare `apply_workflow_components` far above (sub
+    // workflows and response schema only) plus `workflow.instructions` shoved
+    // in as a raw `additional_system_prompt`, so `biorouter run --workflow`
+    // silently dropped `skills:` and `knowledge_bases:` while every other
+    // surface honoured them.
+    //
+    // It runs here, not earlier, because `prepare_prompt` resolves declared
+    // skills against the SESSION — which does not exist until now.
+    if let Some(workflow) = workflow {
+        let prepared = match biorouter::workflow::runtime::prepare_prompt(
+            session.agent.config.session_manager.as_ref(),
+            &session_id,
+            workflow,
+        )
+        .await
+        {
+            Ok(prompt) => prompt,
+            Err(err) => {
+                // A workflow naming a skill that is not installed is a broken
+                // run, not a run with a missing hint: the instructions the
+                // skill carries are load-bearing. Fail with the name.
+                output::render_error(&format!("Failed to prepare workflow: {err}"));
+                process::exit(1);
+            }
+        };
+        if let Err(err) = biorouter::workflow::runtime::install_prepared(
+            &session.agent,
+            &session_id,
+            workflow,
+            true,
+            prepared,
+        )
+        .await
+        {
+            output::render_error(&format!("Failed to apply workflow: {err}"));
+            process::exit(1);
+        }
     }
 
     // Only override system prompt if a system override exists

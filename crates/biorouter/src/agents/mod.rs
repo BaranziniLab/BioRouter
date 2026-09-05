@@ -84,6 +84,10 @@ pub mod turn_abort;
 pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
+// The `platform__manage_workflow` handler: the model's hand on the user's saved
+// workflows. An Agent tool rather than an extension because `generate` needs the
+// agent's own provider — see the module header.
+pub mod workflow_tool;
 // BR-71: the `workspace` platform extension — the in-process sibling of
 // `chatrecall_extension`, whose tools operate the workspace itself (sessions,
 // and the GUI's tabs when one is attached).

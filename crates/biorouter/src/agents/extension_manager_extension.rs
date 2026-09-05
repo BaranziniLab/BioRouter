@@ -1040,12 +1040,12 @@ async fn remove_staged_provenance(
     let config = expected_entry.config.clone();
     let config_restored =
         crate::config::extensions::restore_extension_if_absent(stored_key, expected_entry)
-        .map_err(|error| error.to_string())
-        .and_then(|restored| {
-            restored
-                .then_some(())
-                .ok_or_else(|| "a concurrent configuration replacement was preserved".to_owned())
-        });
+            .map_err(|error| error.to_string())
+            .and_then(|restored| {
+                restored.then_some(()).ok_or_else(|| {
+                    "a concurrent configuration replacement was preserved".to_owned()
+                })
+            });
     let package_restored =
         restore_staged_package(manager, &config, staged.staged_rename(), was_attached).await;
     let restoration = match (config_restored, package_restored) {

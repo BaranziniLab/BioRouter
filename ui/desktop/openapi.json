@@ -7981,7 +7981,8 @@
               }
             }
           }
-        ]
+        ],
+        "description": "⚠ `PartialEq` is not derive-everything hygiene: `remove_extension_if_matches`\nalready compares the two fields by hand, and `remove_extension`'s\npost-approval re-validation compares whole entries — an approval is only\natomic against a tree that moved under it if \"the same entry\" has one\ndefinition."
       },
       "ExtensionLoadResult": {
         "type": "object",
@@ -13918,6 +13919,7 @@
       },
       "WorkflowManifest": {
         "type": "object",
+        "description": "One workflow as every surface sees it: the parsed document, where it came\nfrom, and the stable id the interfaces address it by.",
         "required": [
           "id",
           "workflow",

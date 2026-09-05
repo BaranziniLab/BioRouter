@@ -1764,15 +1764,14 @@ async fn execute_job(
         .apply()
         .await?;
 
-    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()?;
-    crate::workflow::runtime::apply_knowledge_selection(&knowledge, &session.id, &workflow)?;
-    crate::workflow::runtime::apply_prepared_to_agent(
+    crate::workflow::runtime::install_prepared(
         &agent,
+        &session.id,
         &workflow,
         true,
         prepared_workflow_prompt,
     )
-    .await;
+    .await?;
 
     let mut jobs_guard = jobs.lock().await;
     if let Some((_, job_def)) = jobs_guard.get_mut(job_id.as_str()) {
@@ -2548,12 +2547,15 @@ mod tests {
         let prepared = execute
             .find("runtime::prepare_prompt")
             .expect("workflow skills and prompt are preflighted");
-        let knowledge = execute
-            .find("apply_knowledge_selection")
-            .expect("scheduled knowledge selection is applied");
-        let skills_and_components = execute
-            .find("runtime::apply_prepared_to_agent")
-            .expect("scheduled skills and components are applied");
+        // Knowledge selection and prompt assembly are ONE call now
+        // (`runtime::install_prepared`), shared with `biorouter run --workflow`,
+        // which used to do neither. Their relative order stopped being a
+        // property of this function the moment they stopped being two calls
+        // here — so it is asserted where it now lives, in `install_prepared`
+        // itself, rather than dropped.
+        let installed = execute
+            .find("runtime::install_prepared")
+            .expect("scheduled knowledge selection, skills and components are applied");
         let reply = execute.find(".reply(").expect("scheduled model call");
 
         assert!(
@@ -2561,16 +2563,26 @@ mod tests {
             "fallible workflow inputs are preflighted first"
         );
         assert!(
-            persisted < knowledge,
-            "workflow must be stored before selection"
+            persisted < installed,
+            "workflow must be stored before its state is installed"
         );
+        assert!(installed < reply, "all workflow state must precede reply");
+
+        let runtime = include_str!("workflow/runtime.rs");
+        let install = runtime
+            .split("pub async fn install_prepared(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("install_prepared production body");
+        let knowledge = install
+            .find("apply_knowledge_selection")
+            .expect("the shared install applies the knowledge selection");
+        let skills_and_components = install
+            .find("apply_prepared_to_agent")
+            .expect("the shared install applies skills and components");
         assert!(
             knowledge < skills_and_components,
             "knowledge precedes prompt assembly"
-        );
-        assert!(
-            skills_and_components < reply,
-            "all workflow state must precede reply"
         );
     }
 

@@ -1,22 +1,53 @@
-Based on our conversation so far, could you create:
+Turn this conversation into a reusable **workflow**: a saved setup someone can start a fresh chat from and get the same kind of help again, without re-explaining anything.
 
-1. A concise title (5-10 words) that captures the main topic or task
-2. A brief description (1-2 sentences) that summarizes what this workflow helps with
-3. A concise set of instructions (1-2 paragraphs) that describe what you've been helping with. Make the instructions generic, and higher-level so that can be re-used across various similar tasks. Pay special attention if any output styles or formats are requested (and make it clear), and note any non standard tools used or required.
-4. A list of 3-5 example activities (as a few words each at most) that would be relevant to this topic
-5. If the conversation clearly used or requested specific skills, a `skills` array with their exact names. If no specific skills are clearly required, use an empty array.
+Write the workflow for the NEXT run, not this one. Generalise away this conversation's specific values — the particular file, the particular date, the particular patient cohort — and turn the ones that will change into parameters.
 
-Format your response in _VALID_ json, with keys being `title`, `description`, `instructions` (string), `activities` (array of strings), and `skills` (array of strings).
-For example, perhaps we have been discussing fruit and you might write:
+Reply with _VALID_ JSON and nothing else. Keys:
+
+- `title` — 5-10 words naming the task, not this chat.
+- `description` — 1-2 sentences on what the workflow helps with.
+- `instructions` — 1-2 paragraphs of standing instruction to the assistant. Say how to do the work, what output format is expected, and any non-standard tool the task depends on. Do not narrate what happened here.
+- `activities` — 3-5 very short example prompts (a few words each) a user could click to start.
+- `prompt` — OPTIONAL, and the difference between a workflow that can run unattended and one that cannot. The opening message that starts the work. Include it when the workflow has a clear job to do on each run; omit it when the user should say what they want first. Use `{{ parameter_key }}` to refer to a parameter.
+- `parameters` — OPTIONAL. The values that change between runs. Reference them from `prompt` and `instructions` as `{{ key }}`. Each is an object with:
+  - `key` — snake_case identifier.
+  - `input_type` — one of `string`, `number`, `boolean`, `date`, `file`, `select`.
+  - `requirement` — `required`, `optional`, or `user_prompt` (ask the user each run).
+  - `description` — what to put here, written for whoever runs it.
+  - `default` — only for `optional`. Never for `file`.
+  - `options` — the allowed values; REQUIRED when `input_type` is `select`, and a `select` parameter's `default` must be one of them.
+- `skills` — OPTIONAL. Exact names of skills this conversation clearly used or needed. Use `[]` when none are required; do not guess.
+
+Leave a key out rather than inventing a value for it. An empty `parameters` list is better than parameters nobody will fill in.
+
+Example — a conversation that ended up pulling a gene's disease associations out of SPOKE and writing them up:
 
 {
-"title": "Fruit Information Assistant",
-"description": "A workflow for finding and sharing information about different types of fruit.",
-"instructions": "Using web searches we find pictures of fruit, and always check what language to reply in.",
-"activities": [
-"Show pics of apples",
-"say a random fruit",
-"share a fruit fact"
-],
-"skills": []
+  "title": "Gene-disease association summary from SPOKE",
+  "description": "Looks up a gene in the SPOKE knowledge graph and writes a short, sourced summary of the diseases it is associated with.",
+  "instructions": "Query SPOKE for the named gene and collect its disease associations. Report the strongest associations first, and give the supporting evidence type for each. Write for a biomedical researcher who does not know the graph schema: name the diseases in plain language, and note when an association rests on a single source. Finish with a short 'what this does not show' paragraph. If the gene is not in the graph, say so plainly rather than substituting a similar one.",
+  "activities": [
+    "Summarise APOE",
+    "Compare two genes",
+    "Show the evidence types",
+    "Export as markdown"
+  ],
+  "prompt": "Summarise the disease associations for {{ gene_symbol }} at a {{ detail_level }} level of detail.",
+  "parameters": [
+    {
+      "key": "gene_symbol",
+      "input_type": "string",
+      "requirement": "user_prompt",
+      "description": "HGNC gene symbol, for example APOE or TP53"
+    },
+    {
+      "key": "detail_level",
+      "input_type": "select",
+      "requirement": "optional",
+      "description": "How much detail the summary should go into",
+      "default": "brief",
+      "options": ["brief", "standard", "exhaustive"]
+    }
+  ],
+  "skills": ["spoke-knowledge-graph"]
 }

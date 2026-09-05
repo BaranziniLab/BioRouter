@@ -622,7 +622,13 @@ export function WorkflowFormFields({
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
-                      placeholder="e.g. anthropic, openai"
+                      // Local providers first, matching the ordering every
+                      // other provider surface uses (Local before Institutional
+                      // before Commercial). The old placeholder named only
+                      // "anthropic, openai" and so silently implied the
+                      // subscription-backed and local providers were not
+                      // options here.
+                      placeholder="e.g. llamacpp, ollama, anthropic, claude_code"
                       className={inputClass}
                     />
                   </div>
@@ -636,7 +642,10 @@ export function WorkflowFormFields({
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
-                      placeholder="e.g. claude-opus-4-8"
+                      // A model id, not a model that must exist: the field is
+                      // free text and the provider decides. The old example
+                      // named a model from a superseded generation.
+                      placeholder="e.g. claude-opus-5, gemma4-12b"
                       className={inputClass}
                     />
                   </div>

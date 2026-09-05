@@ -16,6 +16,17 @@ use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
 use biorouter::conversation::Conversation;
+
+/// The knowledge service the `/workflow` capture reads its selection from.
+///
+/// A machine with no knowledge store yet is not an error for this purpose — the
+/// capture simply has nothing to record — so the caller downgrades a failure to
+/// a warning rather than losing the generated workflow over it.
+fn knowledge_service_for_enrichment(
+) -> anyhow::Result<biorouter_mcp::knowledge::service::KnowledgeService> {
+    biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+}
+
 use std::io::{IsTerminal, Write};
 use std::str::FromStr;
 use tokio::signal::ctrl_c;
@@ -32,7 +43,7 @@ use biorouter::utils::safe_truncate;
 pub use builder::{build_session, unconfigured_precondition, SessionBuilderConfig};
 use console::Color;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use biorouter::agents::extension::{Envs, ExtensionConfig, PLATFORM_EXTENSIONS};
 use biorouter::agents::types::RetryConfig;
 use biorouter::agents::{Agent, SessionConfig, COMPACT_TRIGGERS};
@@ -968,6 +979,14 @@ impl CliSession {
         Ok(())
     }
 
+    /// `/workflow` — capture this chat as a reusable workflow.
+    ///
+    /// Goes through the same two steps the desktop's "create workflow from this
+    /// chat" does, and that is the point: generate, then enrich from the live
+    /// session. This used to generate and save straight away, so the identical
+    /// conversation produced a workflow with no `extensions:`, no
+    /// `knowledge_bases:` and no `author:` here, and a fully populated one in
+    /// the app.
     async fn handle_workflow(&mut self, filepath_opt: Option<String>) {
         println!("{}", console::style("Generating Workflow").green());
 
@@ -975,24 +994,56 @@ impl CliSession {
         let workflow = self.agent.create_workflow(self.messages.clone()).await;
         output::hide_thinking();
 
-        match workflow {
-            Ok(workflow) => {
-                let filepath_str = filepath_opt.as_deref().unwrap_or("workflow.yaml");
-                match self.save_workflow(&workflow, filepath_str) {
-                    Ok(path) => println!(
-                        "{}",
-                        console::style(format!("Saved workflow to {}", path.display())).green()
-                    ),
-                    Err(e) => println!("{}", console::style(e).red()),
-                }
-            }
+        let mut workflow = match workflow {
+            Ok(workflow) => workflow,
             Err(e) => {
                 println!(
                     "{}: {:?}",
                     console::style("Failed to generate workflow").red(),
                     e
                 );
+                return;
             }
+        };
+
+        match knowledge_service_for_enrichment() {
+            Ok(knowledge) => {
+                match biorouter::workflow::service::session_enrichment(
+                    &self.agent,
+                    &knowledge,
+                    &self.session_id,
+                    None,
+                )
+                .await
+                {
+                    Ok(enrichment) => biorouter::workflow::service::apply_session_enrichment(
+                        &mut workflow,
+                        enrichment,
+                    ),
+                    Err(e) => println!(
+                        "{}",
+                        console::style(format!(
+                            "Could not capture this session's setup into the workflow: {e}"
+                        ))
+                        .yellow()
+                    ),
+                }
+            }
+            Err(e) => println!(
+                "{}",
+                console::style(format!(
+                    "Could not read knowledge bases for the workflow: {e}"
+                ))
+                .yellow()
+            ),
+        }
+
+        match self.save_workflow(&workflow, filepath_opt.as_deref()) {
+            Ok(path) => println!(
+                "{}",
+                console::style(format!("Saved workflow to {}", path.display())).green()
+            ),
+            Err(e) => println!("{}", console::style(e).red()),
         }
     }
 
@@ -1816,47 +1867,26 @@ impl CliSession {
         Ok(())
     }
 
-    /// Save a workflow to a file
+    /// Save a workflow through the ONE writer.
     ///
-    /// # Arguments
-    /// * `workflow` - The workflow to save
-    /// * `filepath_str` - The path to save the workflow to
-    ///
-    /// # Returns
-    /// * `Result<PathBuf, String>` - The path the workflow was saved to or an error message
+    /// ⚠ This used to be a hand-rolled `serde_yaml::to_writer` into
+    /// `./workflow.yaml`. That bypassed `service::save`, and with it: the user's
+    /// workflow library as the default destination, the slug-and-de-dup filename
+    /// rule, the block-scalar reformatting that keeps `instructions` readable,
+    /// and the validation that stops an unloadable workflow being written and
+    /// reported as saved. With no path given the workflow now lands in the
+    /// library, where `list` and the interfaces can see it — the old default
+    /// dropped it in whatever directory the CLI happened to be started from.
     fn save_workflow(
         &self,
         workflow: &biorouter::workflow::Workflow,
-        filepath_str: &str,
+        filepath_str: Option<&str>,
     ) -> anyhow::Result<PathBuf> {
-        let path_buf = PathBuf::from(filepath_str);
-        let mut path = path_buf.clone();
-
-        // Update the final path if it's relative
-        if path_buf.is_relative() {
-            // If the path is relative, resolve it relative to the current working directory
-            let cwd = std::env::current_dir().context("Failed to get current directory")?;
-            path = cwd.join(&path_buf);
-        }
-
-        // Check if parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                return Err(anyhow::anyhow!(
-                    "Directory '{}' does not exist",
-                    parent.display()
-                ));
-            }
-        }
-
-        // Try creating the file
-        let file = std::fs::File::create(path.as_path())
-            .context(format!("Failed to create file '{}'", path.display()))?;
-
-        // Write YAML
-        serde_yaml::to_writer(file, workflow).context("Failed to save workflow")?;
-
-        Ok(path)
+        let target = match filepath_str {
+            Some(path) => biorouter::workflow::service::SaveTarget::Path(PathBuf::from(path)),
+            None => biorouter::workflow::service::SaveTarget::Library,
+        };
+        biorouter::workflow::service::save(workflow, target)
     }
 
     fn push_message(&mut self, message: Message) {

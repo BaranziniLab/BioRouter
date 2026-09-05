@@ -33,7 +33,8 @@ use crate::agents::extension_manager::{
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
-    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
@@ -6527,6 +6528,19 @@ impl Agent {
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                // Deliberately NOT bridged, and the reason is the list it is
+                // absent from rather than a judgement about coding agents.
+                // `CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS` is not "platform
+                // tools the bridge permits" — it is gated on `trusted_knowledge`
+                // and keyed to the `knowledge` capability target, because both
+                // of its entries are knowledge ingestion and `ChatBridgeDispatch`
+                // carries an `ingest_provider` to run them. Workflow management
+                // is neither a knowledge tool nor routed by that dispatch, so
+                // bridging it would advertise a call the child cannot resolve —
+                // which is exactly what this list exists to prevent. It sits
+                // beside `manage_schedule`, its real sibling: both are
+                // agent-dispatched management tools over the user's own setup.
+                || name == crate::agents::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
             let target_enabled = targets.iter().any(|target| {
@@ -6812,6 +6826,27 @@ impl Agent {
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let result = self.handle_read_session_blob(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
+        // The user's saved workflows. Dispatched here rather than from an
+        // extension because `generate` runs `Agent::create_workflow`, which
+        // needs this agent's provider, prompt manager and extension manager —
+        // the same reason `platform__ingest_source` sits above.
+        if tool_call.name == PLATFORM_MANAGE_WORKFLOW_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self
+                .handle_manage_workflow(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -7501,6 +7536,13 @@ impl Agent {
                 .await,
             // BR-7: the retrieval half of externalized tool results.
             session_blobs: message_blobs::lazy_load_enabled(),
+            // Unconditional: workflow management has no capability to hang off,
+            // and the daemon-level question (can a person be asked to approve a
+            // write?) narrows the tool's own action list rather than hiding it —
+            // `list` and `read` are useful on a daemon that can never approve
+            // anything. The field exists so a future condition lands here beside
+            // the others instead of becoming a fifth `if` in `list_tools_for`.
+            workflows: true,
         }
     }
 
@@ -11384,12 +11426,18 @@ impl Agent {
             metadata: None,
         };
 
-        // Ideally we'd get the name of the provider we are using from the provider itself,
-        // but it doesn't know and the plumbing looks complicated.
-        let config = Config::global();
-        let provider_name: String = config
-            .get_biorouter_provider()
-            .expect("No provider configured. Run 'biorouter configure' first");
+        // The provider knows its own name — `Provider::get_name()`, used three
+        // times elsewhere in this file. The comment that used to sit here said
+        // it "doesn't know and the plumbing looks complicated", and that was
+        // simply false; the workaround it justified read the MACHINE-DEFAULT
+        // provider while the model name a few lines above came from the SESSION
+        // provider, so a rebound session emitted a provider/model pair that had
+        // never coexisted.
+        //
+        // It also `.expect()`ed, inside a path an axum handler awaits: a daemon
+        // with no configured default panicked the request rather than answering
+        // it.
+        let provider_name = provider.get_name().to_string();
 
         let settings = Settings {
             biorouter_provider: Some(provider_name.clone()),
@@ -11439,6 +11487,36 @@ impl Agent {
             })
             .unwrap_or_default();
 
+        // `prompt` and `parameters` are what make a generated workflow runnable
+        // rather than merely readable: without a prompt it cannot run headless
+        // at all, and without parameters it is pinned to this conversation's
+        // specific values. The generator was never asked for either, so no
+        // generated workflow had ever had them.
+        let prompt = json_content
+            .as_ref()
+            .and_then(|json| json.get("prompt"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(ToString::to_string);
+
+        // A malformed parameter list must not lose the whole workflow: the
+        // instructions and activities are the expensive part and are already
+        // parsed. Drop the parameters, say so, keep the rest.
+        let parameters = json_content
+            .as_ref()
+            .and_then(|json| json.get("parameters"))
+            .and_then(|value| {
+                serde_json::from_value::<Vec<crate::workflow::WorkflowParameter>>(value.clone())
+                    .map_err(|err| {
+                        tracing::warn!(
+                            "Dropping generated workflow parameters that did not parse: {err}"
+                        );
+                    })
+                    .ok()
+            })
+            .filter(|parameters: &Vec<_>| !parameters.is_empty());
+
         let mut workflow_builder = Workflow::builder()
             .title(title)
             .description(description)
@@ -11450,6 +11528,12 @@ impl Agent {
 
         if !skills.is_empty() {
             workflow_builder = workflow_builder.skills(skills);
+        }
+        if let Some(prompt) = prompt {
+            workflow_builder = workflow_builder.prompt(prompt);
+        }
+        if let Some(parameters) = parameters {
+            workflow_builder = workflow_builder.parameters(parameters);
         }
 
         let workflow = workflow_builder.build().map_err(|e| {
@@ -11946,10 +12030,10 @@ mod tests {
     }
 
     /// The gates each still decide their own tool, and the `extension_name`
-    /// scope still applies to all four. Catches an assembly that ORs the gates
+    /// scope still applies to every one. Catches an assembly that ORs the gates
     /// (a session with only Knowledge would gain the scheduler tool) and one
     /// that drops the scope filter (`list_tools(Some("developer"))` would grow
-    /// four tools that do not belong to Developer).
+    /// tools that do not belong to Developer).
     #[test]
     fn each_platform_tool_tracks_its_own_gate_and_the_listing_scope() {
         use platform_tools::PlatformToolGates;
@@ -11964,11 +12048,13 @@ mod tests {
             scheduler: true,
             knowledge: true,
             session_blobs: true,
+            workflows: true,
         };
         let none = PlatformToolGates {
             scheduler: false,
             knowledge: false,
             session_blobs: false,
+            workflows: false,
         };
 
         assert_eq!(
@@ -12011,6 +12097,16 @@ mod tests {
                 None
             ),
             vec![PLATFORM_READ_SESSION_BLOB_TOOL_NAME]
+        );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    workflows: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_MANAGE_WORKFLOW_TOOL_NAME]
         );
     }
 

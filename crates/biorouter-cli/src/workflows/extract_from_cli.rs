@@ -50,9 +50,17 @@ pub fn extract_workflow_info_from_cli(
         workflow.sub_workflows = Some(all_sub_workflows);
     }
 
+    // ⚠ `instructions` is deliberately NOT forwarded as `additional_system_prompt`.
+    //
+    // Doing that appended the raw text to the system prompt, which is not what a
+    // workflow's instructions are: `runtime::prepare_prompt` renders them
+    // through `desktop_workflow_instruction.md` together with the inlined bodies
+    // of every skill the workflow declares. `build_session` now performs that
+    // install, so forwarding here as well would apply the instructions twice —
+    // once raw and once rendered.
     let input_config = InputConfig {
         contents: workflow.prompt.clone().filter(|s| !s.trim().is_empty()),
-        additional_system_prompt: workflow.instructions.clone(),
+        additional_system_prompt: None,
     };
 
     Ok((input_config, workflow))
@@ -93,9 +101,18 @@ mod tests {
         let response = workflow.response;
 
         assert_eq!(input_config.contents, Some("test_prompt".to_string()));
+        // The instructions are NOT forwarded as a raw system-prompt addition —
+        // they ride on the workflow, and `build_session` installs them through
+        // `runtime::prepare_prompt`, which is what also inlines the bodies of
+        // any skills the workflow declares. Forwarding here as well would apply
+        // them twice, once raw and once rendered. Templating still happens, and
+        // that is the half worth pinning:
+        assert_eq!(input_config.additional_system_prompt, None);
         assert_eq!(
-            input_config.additional_system_prompt,
-            Some("test_instructions my_value".to_string())
+            workflow.instructions.as_deref(),
+            Some("test_instructions my_value"),
+            "parameter substitution must still reach the instructions the \
+             install path renders"
         );
         assert!(workflow.extensions.is_none());
 
@@ -161,9 +178,18 @@ mod tests {
         let response = workflow.response;
 
         assert_eq!(input_config.contents, Some("test_prompt".to_string()));
+        // The instructions are NOT forwarded as a raw system-prompt addition —
+        // they ride on the workflow, and `build_session` installs them through
+        // `runtime::prepare_prompt`, which is what also inlines the bodies of
+        // any skills the workflow declares. Forwarding here as well would apply
+        // them twice, once raw and once rendered. Templating still happens, and
+        // that is the half worth pinning:
+        assert_eq!(input_config.additional_system_prompt, None);
         assert_eq!(
-            input_config.additional_system_prompt,
-            Some("test_instructions my_value".to_string())
+            workflow.instructions.as_deref(),
+            Some("test_instructions my_value"),
+            "parameter substitution must still reach the instructions the \
+             install path renders"
         );
         assert!(workflow.extensions.is_none());
 
