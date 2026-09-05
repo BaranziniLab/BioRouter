@@ -13,6 +13,7 @@ Every step below is given twice where the two interfaces differ: once for **Bior
 ## Contents
 
 - [Create a workflow](#create-a-workflow)
+  - [By asking Biorouter](#by-asking-biorouter)
 - [Edit a workflow](#edit-a-workflow)
 - [Use a workflow](#use-a-workflow)
 - [Validate a workflow](#validate-a-workflow)
@@ -28,11 +29,24 @@ Create a workflow from the current session or from a template.
 
 ### In Desktop, from the current session
 
-1. While in the session you want to save as a workflow, click the workflow button at the bottom of the app.
-2. In the dialog that opens, review and edit the workflow fields as needed.
+1. While in the session you want to save as a workflow, open the **chat summary** (the ☰ button in the chat header, beside the terminal button) and click **Make workflow**.
+2. In the dialog that opens, review and edit the workflow fields as needed. Biorouter fills it in from the conversation, and captures the session's extensions, knowledge bases and model pin for you.
 3. When you're finished, you can:
    - Click `Create Workflow` to save the workflow to your Workflow Library
    - Click `Create & Run Workflow` to save and immediately run the workflow in a new session
+
+### By asking Biorouter
+
+You can also just ask, in any interface:
+
+> Turn this chat into a workflow.
+> What workflows do I have?
+> Delete the old weekly report workflow.
+> Run the cohort summary workflow every Monday at 8am.
+
+Biorouter drafts the workflow from the conversation and shows it to you before anything is saved. Saving, deleting, importing and scheduling each ask you to approve the change first — Biorouter will not alter your workflow library on its own.
+
+> **Note.** This is unavailable in a browser session started by `biorouter serve`, which has no way to prove a person approved a change. Listing and reading still work there.
 
 ### In Desktop, from the Workflow Library
 
@@ -49,13 +63,17 @@ Create a workflow from the current session or from a template.
 
 ### In the CLI, from the current session
 
-Workflow files can be either JSON (`.json`) or YAML (`.yaml`) files. While in a [session](../getting-started/managing-sessions.md), run this command to generate a `workflow.yaml` file in your current directory:
+Workflow files can be either JSON (`.json`) or YAML (`.yaml`) files. While in a [session](../getting-started/managing-sessions.md), run this command to save the conversation as a workflow:
 
 ```sh
 /workflow
 ```
 
-If you want to specify a different name, you can provide it as an argument:
+With no argument it goes into your **workflow library** (`~/.config/biorouter/workflows/`), under a filename derived from its title, where `biorouter workflow list` and the Desktop library can both see it. It captures the same extensions, knowledge bases and model pin the Desktop dialog does.
+
+> **Note.** Before Biorouter 1.90 this wrote `workflow.yaml` into whatever directory the CLI happened to be started in, where nothing could list it, and it skipped the session capture. Pass a path if you still want a file in a specific place.
+
+If you want to write it somewhere specific, give a path:
 
 ```sh
 /workflow my-custom-workflow.yaml

@@ -143,7 +143,9 @@ where
         workflow_dir.to_string(),
     );
     let mut missing_params: Vec<String> = Vec::new();
-    for param in workflow_parameters.unwrap_or_default() {
+    let declared = workflow_parameters.unwrap_or_default();
+    for param in &declared {
+        let param = param.clone();
         if !param_map.contains_key(&param.key) {
             match (&param.default, &param.requirement) {
                 (Some(default), _) => param_map.insert(param.key.clone(), default.clone()),
@@ -163,6 +165,38 @@ where
             param_map.insert(param.key.clone(), file_content);
         }
     }
+
+    // A `select` parameter's `options` list was decorative: only `File` was
+    // special-cased, so any string at all was substituted into the prompt
+    // regardless of what the workflow said the allowed values were. The list is
+    // the author's statement about what the workflow can handle, and a run
+    // outside it is a run the author never described.
+    //
+    // Checked AFTER resolution rather than at each insertion point, because a
+    // value can arrive three ways — passed in, taken from `default`, or typed at
+    // a `user_prompt` — and a check at one of them silently misses the others.
+    // (`default` included: a `select` whose default is not among its own options
+    // is a broken workflow, and it should say so rather than run.)
+    for param in &declared {
+        if !matches!(param.input_type, WorkflowParameterInputType::Select) {
+            continue;
+        }
+        let Some(options) = param.options.as_ref().filter(|options| !options.is_empty()) else {
+            continue;
+        };
+        let Some(value) = param_map.get(&param.key) else {
+            continue;
+        };
+        if !options.iter().any(|option| option == value) {
+            anyhow::bail!(
+                "Parameter '{}' must be one of [{}], but got '{}'",
+                param.key,
+                options.join(", "),
+                value
+            );
+        }
+    }
+
     Ok((param_map, missing_params))
 }
 

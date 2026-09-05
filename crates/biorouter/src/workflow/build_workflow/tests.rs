@@ -1,8 +1,11 @@
 use crate::workflow::build_workflow::{
-    build_workflow_from_template, resolve_sub_workflow_path, WorkflowError,
+    apply_values_to_parameters, build_workflow_from_template, resolve_sub_workflow_path,
+    WorkflowError,
 };
 use crate::workflow::read_workflow_file_content::WorkflowFile;
-use crate::workflow::{WorkflowParameterInputType, WorkflowParameterRequirement};
+use crate::workflow::{
+    WorkflowParameter, WorkflowParameterInputType, WorkflowParameterRequirement,
+};
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -672,4 +675,58 @@ parameters:
             panic!("Expected TemplateRendering error for file parameter with default");
         }
     }
+}
+
+/// A `select` parameter's `options` list is enforced.
+///
+/// It was decorative: `apply_values_to_parameters` special-cased only the `File`
+/// input type, so any string at all was substituted into the prompt. The list is
+/// the author's statement about what the workflow can handle.
+#[test]
+fn a_select_parameter_rejects_a_value_outside_its_options() {
+    let parameters = vec![WorkflowParameter {
+        key: "detail".to_string(),
+        input_type: WorkflowParameterInputType::Select,
+        requirement: WorkflowParameterRequirement::Optional,
+        description: "how much detail".to_string(),
+        default: Some("brief".to_string()),
+        options: Some(vec!["brief".to_string(), "full".to_string()]),
+    }];
+
+    let accepted = apply_values_to_parameters(
+        &[("detail".to_string(), "full".to_string())],
+        Some(parameters.clone()),
+        "/tmp",
+        None::<fn(&str, &str) -> anyhow::Result<String>>,
+    );
+    assert!(accepted.is_ok(), "a listed value must be accepted");
+
+    let refused = apply_values_to_parameters(
+        &[("detail".to_string(), "exhaustive".to_string())],
+        Some(parameters.clone()),
+        "/tmp",
+        None::<fn(&str, &str) -> anyhow::Result<String>>,
+    )
+    .expect_err("a value outside the options must be refused");
+    let message = refused.to_string();
+    assert!(message.contains("detail"), "{message}");
+    assert!(
+        message.contains("brief") && message.contains("full"),
+        "the refusal must name the allowed values: {message}"
+    );
+
+    // The default takes the same path, so a workflow whose own default is not
+    // among its options says so rather than running.
+    let mut broken = parameters;
+    broken[0].default = Some("nonsense".to_string());
+    assert!(
+        apply_values_to_parameters(
+            &[],
+            Some(broken),
+            "/tmp",
+            None::<fn(&str, &str) -> anyhow::Result<String>>,
+        )
+        .is_err(),
+        "a default outside the options is a broken workflow"
+    );
 }

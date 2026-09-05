@@ -34,7 +34,16 @@ pub fn handle_install(workflow_path: &str) -> Result<()> {
         )
     })?;
     let title = workflow.title.clone();
-    let saved = biorouter::workflow::local_workflows::save_workflow_to_file(workflow, None)?;
+    // Through the core: `service::save` re-validates, applies the library's
+    // filename rule and invalidates the id->path cache, so a workflow installed
+    // here is immediately resolvable by every other surface. Calling the
+    // physical writer directly skipped the last of those, and an install
+    // followed by a `delete` in the same process resolved against a map taken
+    // before the file existed.
+    let saved = biorouter::workflow::service::save(
+        &workflow,
+        biorouter::workflow::service::SaveTarget::Library,
+    )?;
     println!(
         "{} installed workflow '{}'",
         style("✓").green().bold(),

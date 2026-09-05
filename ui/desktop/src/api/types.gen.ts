@@ -1123,6 +1123,13 @@ export type ExtensionData = {
     [key: string]: unknown;
 };
 
+/**
+ * ⚠ `PartialEq` is not derive-everything hygiene: `remove_extension_if_matches`
+ * already compares the two fields by hand, and `remove_extension`'s
+ * post-approval re-validation compares whole entries — an approval is only
+ * atomic against a tree that moved under it if "the same entry" has one
+ * definition.
+ */
 export type ExtensionEntry = ExtensionConfig & {
     enabled: boolean;
 };
@@ -4082,6 +4089,10 @@ export type WorkflowKnowledgeBases = {
     visible?: Array<string>;
 };
 
+/**
+ * One workflow as every surface sees it: the parsed document, where it came
+ * from, and the stable id the interfaces address it by.
+ */
 export type WorkflowManifest = {
     file_path: string;
     id: string;
