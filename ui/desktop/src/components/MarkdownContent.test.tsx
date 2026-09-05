@@ -297,6 +297,32 @@ console.log('Hello, World!');
       expect(onRunInTerminal).toHaveBeenCalledExactlyOnceWith(script);
     });
 
+    it('keeps its confirmation across a parent re-render with a STABLE callback', async () => {
+      // Measured in a real browser: an unstable `onRunInTerminal` gives
+      // ReactMarkdown a new `components.code` identity every render, and React
+      // treats a new component type as a different component — so the whole
+      // code-block subtree unmounts and remounts, taking this state (and
+      // Copy's "Copied", which has always worked the same way) with it.
+      //
+      // BaseChat's handler is useCallback-stable for exactly this reason. The
+      // assertion is here rather than there because this is where an unstable
+      // callback would show itself: a transcript whose blocks are torn down and
+      // rebuilt on every streaming frame.
+      const onRunInTerminal = vi.fn();
+      const { rerender } = render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
+      );
+
+      fireEvent.click(await findRunButton());
+      await screen.findByRole('button', { name: /^sent$/i });
+
+      rerender(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
+      );
+
+      expect(screen.getByRole('button', { name: /^sent$/i })).toBeInTheDocument();
+    });
+
     it('still shows the language label and the code itself', async () => {
       render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
 
