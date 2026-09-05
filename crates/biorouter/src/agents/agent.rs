@@ -7829,7 +7829,7 @@ impl Agent {
         }
 
         // The four Agent-owned `platform__*` tools, gated ONCE (issue #141).
-        // The three gates are sampled here because this is the only place that
+        // The five gates are sampled here because this is the only place that
         // can see all three — the scheduler handle and the Knowledge capability
         // are per-agent state, the blob flag is process-global — and the
         // assembly itself lives in `platform_tools` so every other reader of
