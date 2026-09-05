@@ -16,13 +16,32 @@ no Business Associate Agreement and no zero-data-retention agreement, so protect
 information must never reach these providers, and the page explains both the rule and the
 gate that enforces it.
 
-**They have an intentionally narrow tool surface.** Knowledge ingest, query and
-lint workflows can use their bounded workflow tools, and chat can delegate and
-supervise direct subagents plus read/query Knowledge. Developer, code-execution,
-custom, marketplace and other arbitrary host-reading extensions are withheld:
-the vendor CLI must retain its subscription credential on the host, so exposing
-those tools would let model-authored input read it. See
+**They get every built-in capability, on the same terms as any other provider.**
+Developer (shell, text editor, analyze, screen capture, image processor),
+Computer Controller, Knowledge, Workspace, Skills, Extension Manager, Memory,
+To Do, Chat Recall, Agent Drafter and Auto Visualiser all reach the child over
+the bridge. What still does *not* is a **third-party** extension's tools, which
+remain admitted case by case rather than wholesale.
+
+⚠ **This changed, and the previous text described the old behaviour.** The
+Developer roster used to be an empty list, and the reason given was that the
+vendor CLI keeps its subscription credential on the host, so a host-reading tool
+would let model-authored (possibly injected) input read it. That risk is real,
+but withholding Developer did not answer it: the child already holds the vendor
+credential it was spawned with, and every other public-tier model with Developer
+enabled reads the same host. What the empty list actually produced was a coding
+agent that could not `ls` a directory while the model beside it could — reported
+repeatedly as a broken Developer capability rather than as a policy. The tools
+are now bridged, and the bound is the same one that applies everywhere else:
+`.biorouterignore`, the secret guard, the permission mode and its inspectors, and
+privacy Gate C. See
 [the tool bridge](tool-bridge.md#the-tools-do-not-have-to-be-an-extensions-109).
+
+⚠ **Consequence worth stating plainly:** under `BIOROUTER_MODE: auto` the
+permission inspector does not prompt, so a bridged `developer__shell` runs
+without a confirmation step. That combination — a coding agent, full Developer,
+and Auto mode — is the one to think about before pointing these providers at a
+machine holding credentials you care about.
 
 ## Documents
 
