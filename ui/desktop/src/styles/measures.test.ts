@@ -120,12 +120,16 @@ describe('the page measure scales with the window', () => {
  * grid with it. The floor is therefore not a taste call — it is sidebar +
  * column, the width at which the reading column first reaches its own measure.
  *
- * ⚠ **The sidebar's MINIMUM, not its default.** The sidebar became
- * user-resizable, and the moment a measure has a range, deriving a floor from
- * the middle of that range makes the floor a lie: widen the sidebar and the
- * reading column is squeezed at a window width this number called roomy. The
- * minimum is the only width in the range that is a property of the app rather
- * than of a preference, so it is the one the window is allowed to promise.
+ * ⚠ **The sidebar's DEFAULT, not its minimum.** The sidebar became
+ * user-resizable, and the floor was briefly derived from the bottom of that
+ * range on the argument that the minimum is the only width in it that is a
+ * property of the app rather than of a preference. That gets the direction
+ * backwards, and this file was rewritten to agree with it rather than catching
+ * it: a floor of `SIDEBAR_MIN_WIDTH + 760` is a promise about a width no
+ * install has until someone drags the edge, and at the width every install
+ * ships with it leaves the column 976 − 288 = 688px — under the very measure
+ * the floor exists to protect. The default is the sidebar the window must be
+ * able to seat.
  *
  * The wide end of the range is not left unguarded — it is closed by
  * construction, and the second test below pins the identity that closes it.
@@ -142,24 +146,37 @@ describe('the minimum window width is derived from the sidebar and the chat meas
   const px = (value: string): number =>
     value.endsWith('rem') ? parseFloat(value) * 16 : parseFloat(value);
 
-  it('is exactly the narrowest sidebar plus the reading column', () => {
+  it('is exactly the default sidebar plus the reading column', () => {
     const minWidth = MAIN.match(/^\s*minWidth: (\d+),$/m);
     if (!minWidth) throw new Error('the main window declares no minWidth');
 
-    expect(Number(minWidth[1])).toBe(SIDEBAR_MIN_WIDTH + px(declaration('measure-chat')));
+    expect(Number(minWidth[1])).toBe(SIDEBAR_DEFAULT_WIDTH + px(declaration('measure-chat')));
+
+    // The PROPERTY the equality above exists to produce, spelled out rather
+    // than left to be inferred from the arithmetic. The equality is the strict
+    // form and subsumes this line today; it is written out because the equality
+    // alone says only that three numbers add up, and a reader deciding which of
+    // them to move needs to see WHICH WAY the relation has to hold. If the
+    // exact equality is ever relaxed — a floor with slack in it would fail the
+    // line above while breaking nothing — this is the assertion that must
+    // survive, and swapping its constant for a narrower one is deleting the
+    // property, not adjusting a number.
+    expect(Number(minWidth[1]) - SIDEBAR_DEFAULT_WIDTH).toBeGreaterThanOrEqual(
+      px(declaration('measure-chat'))
+    );
   });
 
   /**
-   * What makes deriving the floor from the MINIMUM safe rather than merely
-   * cheaper: the widest the user can drag the sidebar, plus the chat measure, is
-   * exactly rung 1 of the yield ladder. So at every window width where the
-   * sidebar still holds a column of its own, even a fully widened one leaves the
-   * measure whole — and below that width rung 1 has already collapsed the
-   * sidebar to an overlay, where it takes nothing from the chat at all.
+   * The wide end of the range, which the floor above deliberately says nothing
+   * about: the widest the user can drag the sidebar, plus the chat measure, is
+   * exactly rung 1 of the yield ladder, below which the sidebar auto-collapses
+   * to an overlay and takes nothing from the chat at all.
    *
-   * Asserted here rather than left as a comment because it is the ONLY thing
-   * standing between a wider sidebar and a squeezed reading column. Raising
-   * SIDEBAR_MAX_WIDTH without moving the ladder must fail, loudly.
+   * Asserted here rather than left as a comment because raising
+   * SIDEBAR_MAX_WIDTH without moving the ladder would let a dragged-open
+   * sidebar eat into the measure at every width the ladder still gives it a
+   * column at. That must fail loudly rather than be rediscovered by measuring
+   * the running app.
    */
   it('leaves the reading column whole even at the widest sidebar', () => {
     expect(SIDEBAR_MAX_WIDTH + px(declaration('measure-chat'))).toBe(SIDEBAR_COMPACT_WIDTH);

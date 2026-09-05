@@ -24,9 +24,9 @@ about a decision can be settled by looking at it rather than by imagining it.
 ## The three findings worth knowing first
 
 - **The section responds to the wrong thing.** Its one breakpoint, `md:` at 930px, is a *viewport*
-  media query — but what changes size is the *pane*. `minWidth: 1000` is derived in `main.ts` as
-  240px of sidebar plus a 760px column, so at the app's own minimum window with the sidebar open the
-  pane is **760px** while the viewport is 1000: the breakpoint fires, lays out two columns, and the
+  media query — but what changes size is the *pane*. `minWidth: 1048` is derived in `main.ts` as the
+  sidebar's 288px default plus a 760px column, so at the app's own minimum window with the sidebar
+  open the pane is **760px** while the viewport is 1048: the breakpoint fires, lays out two columns, and the
   300px Sources rail leaves 444px for a filter strip that needs 757. **The section is at its most
   broken at the smallest size the app allows.** `R-08` replaces the ladder with `@container` queries
   on the pane, with a floor that fits at 760.

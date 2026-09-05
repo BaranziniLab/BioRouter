@@ -1348,22 +1348,29 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    // DERIVED, not chosen: the 216px sidebar MINIMUM (`SIDEBAR_MIN_WIDTH` in
-    // components/ui/sidebarWidth.ts) + the 760px reading column
-    // (`--measure-chat` in styles/main.css) = 976. `useContentSize` is on, so
+    // DERIVED, not chosen: the 288px sidebar DEFAULT (`SIDEBAR_DEFAULT_WIDTH`
+    // in components/ui/sidebarWidth.ts) + the 760px reading column
+    // (`--measure-chat` in styles/main.css) = 1048. `useContentSize` is on, so
     // this is content width, which is the number the renderer sees.
     //
-    // ⚠ The sidebar's MINIMUM, not its default. The sidebar is user-resizable
-    // (216–360px, default 288), and a floor derived from the default would be a
-    // floor the user can push the window under from the other side — widen the
-    // sidebar and the reading column is squeezed at a window width this number
-    // called roomy. The minimum is the only width that is a property of the app
-    // rather than of a preference. The wide end is covered elsewhere and by
-    // construction: 360 + 760 = 1120 = SIDEBAR_COMPACT_WIDTH, so at every window
-    // width that still gives the sidebar a column, even a fully widened one
-    // leaves the measure whole — and below 1120 rung 1 of the yield ladder has
-    // already collapsed the sidebar to an overlay, where it costs the chat
-    // nothing.
+    // ⚠ The sidebar's DEFAULT, not its minimum. The sidebar is user-resizable
+    // (216–360px, default 288), and it is tempting to take the floor from the
+    // bottom of that range on the argument that the minimum is the only width
+    // that is a property of the app rather than of a preference. That argument
+    // gets the direction backwards: a floor of 216 + 760 = 976 is a promise
+    // about a width NO install has until someone drags the edge, and at the
+    // width every install actually ships with it leaves the column 976 − 288 =
+    // 688px — under the very measure this floor exists to protect. The default
+    // is the sidebar the window must be able to seat.
+    //
+    // Past the default the user is giving up reading room deliberately, with
+    // the window already open and the edge under their hand, and can give it
+    // back the same way; a floor cannot promise anything about a preference it
+    // is never told. The wide end is bounded separately and by construction:
+    // 360 + 760 = 1120 = SIDEBAR_COMPACT_WIDTH, so raising SIDEBAR_MAX_WIDTH
+    // past the point where rung 1 of the yield ladder collapses the sidebar to
+    // an overlay would start eating the measure. `styles/measures.test.ts` pins
+    // both the floor here and that identity.
     //
     // Below it the Home column is narrower than its own measure, and the usage
     // heatmap — the one thing on Home whose size is computed rather than
@@ -1375,8 +1382,8 @@ const createChat = async (
     // ⚠ That 989 is a WINDOW width and therefore carries the sidebar of the day
     // inside it — what the heatmap actually reacts to is its own column, i.e.
     // window minus sidebar, so the cliff moves with the sidebar. The measured
-    // cliff is a 749px column (989 − 240); against the 216px minimum the same
-    // cliff is a 965px window, and 976 clears it by the same 11px the old 1000
+    // cliff is a 749px column (989 − 240); against the 288px default the same
+    // cliff is a 1037px window, and 1048 clears it by the same 11px the old 1000
     // cleared 989 by. The floor is still the tokens rather than the measurement,
     // so it survives the heatmap's cell ladder changing.
     // `styles/measures.test.ts` asserts the arithmetic still holds.
@@ -1392,7 +1399,7 @@ const createChat = async (
     // the menu bar and Dock are taken out. The heatmap keeps its chrome locked
     // to its grid instead (see UsageHeatmap's `heatStyle`), so a squeezed grid
     // stays a coherent block rather than desyncing from its own labels.
-    minWidth: 976,
+    minWidth: 1048,
     minHeight: 600,
     resizable: true,
     useContentSize: true,

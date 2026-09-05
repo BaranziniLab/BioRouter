@@ -51,7 +51,16 @@ describe('responsive Sidebar', () => {
       'max-w-(--sidebar-width)'
     );
     expect(drawer).not.toHaveClass('!w-fit', '!max-w-none');
-    expect(drawer.style.getPropertyValue('--sidebar-width')).toBe(`${SIDEBAR_DEFAULT_WIDTH}px`);
+    // ⚠ A LITERAL, exactly as this line read `'15rem'` before the sidebar became
+    // resizable. Writing `` `${SIDEBAR_DEFAULT_WIDTH}px` `` here reads as the
+    // same assertion and is not one: the drawer's width IS that constant, so
+    // both sides move together and the expectation can never fail because the
+    // shipped width changed. The number is load-bearing outside this file — the
+    // OS window's `minWidth` is derived from it (`main.ts`, pinned in
+    // `styles/measures.test.ts`) — so moving it must be a deliberate act that
+    // trips a test, not a silent one.
+    expect(drawer.style.getPropertyValue('--sidebar-width')).toBe('288px');
+    expect(SIDEBAR_DEFAULT_WIDTH).toBe(288);
   });
 
   /**
