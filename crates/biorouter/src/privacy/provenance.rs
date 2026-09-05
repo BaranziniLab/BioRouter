@@ -667,14 +667,21 @@ fn compact_mutations_at(path: &Path) -> std::io::Result<()> {
         .map(|(file, _)| settled_before(file, cutoff))
         .collect::<Vec<_>>();
 
-    // ── Tombstone pairing ── a `DeleteIfMatches` may be folded ONLY together
-    // with every `Upsert` sharing its `install_id`, or not at all.
+    // ── Tombstone pairing ── a tombstone may be folded ONLY together with
+    // every `Upsert` sharing its `install_id`, or not at all.
     // `record_matches_install` compares install ids, so an unsettled upsert is
     // exactly the record a folded tombstone would stop suppressing: folding the
     // tombstone applies the deletion to a base that does not hold the record
     // yet and then removes the tombstone, so the next read re-inserts the
     // record through its `current/` pointer (`if !deleted { … insert(…) }`) —
     // resurrection of provenance the user deleted.
+    //
+    // ⚠ **Both tombstone shapes, not just the marketplace one.** The pointer
+    // sweep in `apply_mutation_list` asks `Tombstone::covers`, which knows both,
+    // so a `DeleteRecordIfMatches` left out of this pairing is resurrected by
+    // exactly the mechanism above. It is paired on the deleted RECORD's
+    // `install_id` because that is the id its `Upsert` carries — the whole-record
+    // comparison in `covers` includes that field, so the two agree.
     let mut pinned: HashSet<Option<String>> = HashSet::new();
     for (index, (_, mutation)) in journal.iter().enumerate() {
         if foldable[index] {
@@ -685,10 +692,12 @@ fn compact_mutations_at(path: &Path) -> std::io::Result<()> {
         }
     }
     for (index, (_, mutation)) in journal.iter().enumerate() {
-        let ProvenanceMutation::DeleteIfMatches { expected } = mutation else {
-            continue;
+        let install_id = match mutation {
+            ProvenanceMutation::DeleteIfMatches { expected } => &expected.install_id,
+            ProvenanceMutation::DeleteRecordIfMatches { record, .. } => &record.install_id,
+            ProvenanceMutation::Upsert { .. } => continue,
         };
-        if pinned.contains(&expected.install_id) {
+        if pinned.contains(install_id) {
             foldable[index] = false;
         }
     }
@@ -1635,6 +1644,61 @@ mod tests {
                 ProvenanceMutation::DeleteIfMatches { .. }
             )),
             "the tombstone was folded away from the fresh Upsert it has to outlive"
+        );
+    }
+
+    /// The same resurrection, through the OTHER tombstone shape. The pointer
+    /// sweep asks `Tombstone::covers`, which knows both, so a
+    /// `DeleteRecordIfMatches` left out of the pairing rule is folded away from
+    /// the `Upsert` it suppresses and the record comes back on the next read.
+    ///
+    /// The fixture record deliberately carries neither `install_dir` nor
+    /// `source_url`, so `DeleteIfMatches` could not name it at all — that is
+    /// why the second shape exists, and it is what `remove_extension` meets.
+    #[test]
+    fn compaction_does_not_resurrect_a_record_deleted_by_the_whole_record_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+
+        record_at(
+            &path,
+            "fixture",
+            ExtensionProvenance {
+                install_id: None,
+                registry_id: "fixture-agent".to_owned(),
+                install_dir: None,
+                source_url: None,
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        )
+        .unwrap();
+        let stored = read_store_at(&path).extensions["fixture"].clone();
+        assert!(
+            marketplace_installs_in_store(&read_store_at(&path), "fixture-agent").is_empty(),
+            "the narrower tombstone must be unable to name this record, or the fixture \
+             is not the case under test"
+        );
+        assert!(remove_extension_provenance_if_matches_at(&path, "fixture", &stored).unwrap());
+        assert!(!read_store_at(&path).extensions.contains_key("fixture"));
+
+        // The tombstone has settled. The `Upsert` and pointer it suppresses have
+        // not, so the tombstone must be held back with them.
+        age_mutations(&path, |mutation| {
+            matches!(mutation, ProvenanceMutation::DeleteRecordIfMatches { .. })
+        });
+        compact_mutations_at(&path).unwrap();
+
+        assert!(
+            !read_store_at(&path).extensions.contains_key("fixture"),
+            "a record deleted through the whole-record tombstone came back after compaction"
+        );
+        assert!(
+            read_mutations(&path).iter().any(|(_, mutation)| matches!(
+                mutation,
+                ProvenanceMutation::DeleteRecordIfMatches { .. }
+            )),
+            "the whole-record tombstone was folded away from the fresh Upsert it has to outlive"
         );
     }
 
