@@ -18,6 +18,7 @@ import {
   screen,
   session,
   shell,
+  systemPreferences,
   Tray,
 } from 'electron';
 import { pathToFileURL, format as formatUrl, URLSearchParams } from 'node:url';
@@ -55,6 +56,11 @@ import {
   type Rect as DragRect,
   type ScreenGeometry,
 } from './windowDrag';
+import {
+  doubleClickWindowAction,
+  WindowMoveDragController,
+  type MovableWindow,
+} from './titlebarWindowGesture';
 import {
   DragGhostWindowController,
   GHOST_OPAQUE_INSET,
@@ -2509,6 +2515,97 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
     width: nextContentBounds.width,
     height: nextContentBounds.height,
   };
+});
+
+// ── The tab band's titlebar gestures ─────────────────────────────────────────
+// Drag the empty part of the band to move the window; double-click it to zoom.
+//
+// ⚠ NOT `-webkit-app-region`, and that is the whole design. The empty area is
+// empty because the tabs are not there YET, so a `drag` rect over it has a
+// geometry that follows the tab list — and Blink only re-collects app-region
+// rects on a paint lifecycle, so until that reaches this process macOS routes
+// with the previous set and a just-created tab sits inside a stale drag rect.
+// That regression is measured and pinned in
+// `components/chatGroups/ChatTabStrip.appRegion.test.tsx`; the renderer half of
+// this replacement is `useTabBandWindowGesture.ts`, the rules are in
+// `titlebarWindowGesture.ts`.
+const windowMoveDrag = new WindowMoveDragController({
+  // DIP already, unlike a MouseEvent's `screenX` — so no coordinate crosses the
+  // wire and `normalizeToDip` is not in the picture.
+  cursorPoint: () => screen.getCursorScreenPoint(),
+  schedule: (fn, ms) => setInterval(fn, ms),
+  cancelScheduled: (timer) => {
+    if (timer) clearInterval(timer as ReturnType<typeof setInterval>);
+  },
+});
+
+function movableWindowFor(event: Electron.IpcMainEvent): MovableWindow | null {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return null;
+  const sender = event.sender;
+  return {
+    id: win.id,
+    // THE RENDERER COUNTS AS PART OF "ALIVE". It is the only thing that can
+    // report the button coming up, so a window whose renderer has gone or
+    // crashed must stop following the cursor even though the window itself is
+    // perfectly healthy.
+    isAlive: () => !win.isDestroyed() && !sender.isDestroyed() && !sender.isCrashed(),
+    isFullScreen: () => win.isFullScreen(),
+    isMaximized: () => win.isMaximized(),
+    unmaximize: () => win.unmaximize(),
+    getBounds: () => win.getBounds(),
+    setPosition: (x, y) => win.setPosition(x, y),
+  };
+}
+
+ipcMain.on('window:drag-start', (event) => {
+  const win = movableWindowFor(event);
+  if (!win) return;
+  windowMoveDrag.begin(win);
+});
+
+ipcMain.on('window:drag-end', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  // Named, so a stale end from a window that is no longer the one being dragged
+  // cannot cancel someone else's drag. The renderer sends this from four
+  // redundant places on purpose.
+  windowMoveDrag.end(win?.id);
+});
+
+ipcMain.on('window:toggle-zoom', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  // The press that opened this double-click also opened a drag. Ending it here
+  // rather than trusting the renderer's `pointerup` to have landed first means
+  // the timer can never be re-positioning the window against bounds that the
+  // zoom below has already replaced.
+  windowMoveDrag.end(win.id);
+  // Leaving full screen belongs to the green button and to the menu, never to a
+  // double-click on the titlebar — matching every other macOS window.
+  if (win.isFullScreen()) return;
+
+  let macPreference: string | null = null;
+  if (process.platform === 'darwin') {
+    try {
+      // Desktop & Dock → "Double-click a window's title bar to". Unset by
+      // default, and unset means Zoom.
+      macPreference = systemPreferences.getUserDefault(
+        'AppleActionOnDoubleClick',
+        'string'
+      ) as string;
+    } catch {
+      macPreference = null;
+    }
+  }
+
+  const action = doubleClickWindowAction(process.platform, macPreference);
+  if (action === 'none') return;
+  if (action === 'minimize') {
+    win.minimize();
+    return;
+  }
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
 });
 
 ipcMain.handle('open-external', async (event, url: string) => {

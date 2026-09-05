@@ -343,6 +343,16 @@ type ElectronAPI = {
   isUsingGitHubFallback: () => Promise<boolean>;
   // Workflow warning functions
   closeWindow: () => void;
+  /**
+   * The tab band's titlebar gestures. `windowDragStart` hands the window to a
+   * cursor-following timer in main, and `windowDragEnd` is what stops it —
+   * main cannot see the mouse button come up, so the renderer OWES it that
+   * message from every path that can end a press. See
+   * `titlebarWindowGesture.ts` and `useTabBandWindowGesture.ts`.
+   */
+  windowDragStart: () => void;
+  windowDragEnd: () => void;
+  windowToggleZoom: () => void;
   ensureWindowContentWidth: (width: number) => Promise<{
     expanded: boolean;
     width: number;
@@ -722,6 +732,9 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('is-using-github-fallback');
   },
   closeWindow: () => ipcRenderer.send('close-window'),
+  windowDragStart: () => ipcRenderer.send('window:drag-start'),
+  windowDragEnd: () => ipcRenderer.send('window:drag-end'),
+  windowToggleZoom: () => ipcRenderer.send('window:toggle-zoom'),
   ensureWindowContentWidth: (width: number) =>
     ipcRenderer.invoke('window:ensure-content-width', width),
   hasAcceptedWorkflowBefore: (workflow: Workflow) =>
