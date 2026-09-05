@@ -97,6 +97,26 @@ describe('persisted session checklist', () => {
       { id: '1', text: 'Waiting', status: 'blocked' },
     ]);
   });
+  it('reads the additive blocked flag the backend now persists', () => {
+    // The backend writes `status: 'in_progress'` plus `blocked: true` so a
+    // Biorouter build predating the status word can still parse the whole
+    // `todo.v1` blob instead of failing it and overwriting the checklist. The
+    // flag is the truth; without honouring it the panel would show a blocked
+    // item as merely in progress.
+    expect(
+      sessionTodoItems({
+        'todo.v1': {
+          items: [
+            { id: '1', text: 'Waiting', status: 'in_progress', blocked: true },
+            { id: '2', text: 'Working', status: 'in_progress' },
+          ],
+        },
+      })
+    ).toEqual([
+      { id: '1', text: 'Waiting', status: 'blocked' },
+      { id: '2', text: 'Working', status: 'in_progress' },
+    ]);
+  });
   it('keeps an item whose status this build does not know, as pending', () => {
     // ⚠ Deliberately NOT dropped. An unrecognised status used to remove the row
     // entirely, so a desktop build older than the backend hid every item in a

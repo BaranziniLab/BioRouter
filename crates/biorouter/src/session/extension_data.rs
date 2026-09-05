@@ -205,10 +205,93 @@ pub struct TodoState {
     pub plan: Option<String>,
 }
 
+/// The status word [`TodoStatus::Blocked`] is PERSISTED as, and the additive
+/// flag that carries the real state beside it.
+///
+/// ⚠ `Blocked` was added under the *unchanged* `todo.v1` key. A build that
+/// predates it deserializes `status` into a three-variant enum, so the literal
+/// word `blocked` fails the WHOLE blob — and the failure is not a missed item.
+/// [`TodoState::load`] reported it as `None`, and the writer's
+/// `unwrap_or_default()` then persisted an empty list over the user's
+/// checklist: silent destruction, in the one direction back-compat was never
+/// tested. So `Blocked` goes to disk as the nearest word a `todo.v1` reader
+/// knows, with the truth in an additive flag next to it — exactly the shape
+/// [`TodoItem::parent`] already relies on. An older reader then parses every
+/// item (a blocked one as in-progress) and, if it writes the list back, loses
+/// only the flag. Neither direction destroys anything.
+///
+/// `in_progress` and not `pending`: a blocked item is one the agent picked up
+/// and could not finish, and `completed` would additionally make
+/// [`TodoState::expand_item`] refuse it.
+const BLOCKED_WIRE_STATUS: &str = "in_progress";
+const BLOCKED_WIRE_FLAG: &str = "blocked";
+
 impl ExtensionState for TodoState {
     const EXTENSION_NAME: &'static str = "todo";
     // v1: structured items + plan. v0 was the `{"content": String}` blob.
     const VERSION: &'static str = "v1";
+
+    /// Persist in a vocabulary a pre-`Blocked` `todo.v1` reader can still parse
+    /// (see [`BLOCKED_WIRE_STATUS`]).
+    ///
+    /// The shim lives here, on the PERSISTENCE boundary, and deliberately not
+    /// on `TodoItem`'s own `Serialize`: the tool replies the model reads go
+    /// through that one, and they must keep saying `blocked` back to a model
+    /// that just asked for `blocked`.
+    fn to_value(&self) -> Result<Value> {
+        let mut value = serde_json::to_value(self).map_err(|e| {
+            anyhow::anyhow!("Failed to serialize {} state: {}", Self::EXTENSION_NAME, e)
+        })?;
+        if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {
+            // Serializing a `Vec` preserves order and drops nothing, so the
+            // JSON array lines up one-to-one with `self.items`.
+            for (raw, item) in items.iter_mut().zip(&self.items) {
+                if item.status != TodoStatus::Blocked {
+                    continue;
+                }
+                let Some(object) = raw.as_object_mut() else {
+                    continue;
+                };
+                object.insert("status".to_string(), Value::from(BLOCKED_WIRE_STATUS));
+                object.insert(BLOCKED_WIRE_FLAG.to_string(), Value::Bool(true));
+            }
+        }
+        Ok(value)
+    }
+
+    /// Inverse of [`Self::to_value`]. The plain derive still accepts a literal
+    /// `"status": "blocked"` as well, so sessions written by a build between
+    /// the variant landing and this fix keep their blocked items.
+    fn from_value(value: &Value) -> Result<Self> {
+        let mut state: Self = serde_json::from_value(value.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to deserialize {} state: {}",
+                Self::EXTENSION_NAME,
+                e
+            )
+        })?;
+        if let Some(items) = value.get("items").and_then(Value::as_array) {
+            for (item, raw) in state.items.iter_mut().zip(items) {
+                if raw.get(BLOCKED_WIRE_FLAG).and_then(Value::as_bool) == Some(true) {
+                    item.status = TodoStatus::Blocked;
+                }
+            }
+        }
+        Ok(state)
+    }
+}
+
+/// A `todo` blob IS stored and this build cannot parse it — in practice because
+/// a newer build wrote a status word or a required field this one does not know.
+///
+/// Deliberately distinct from "nothing stored". The writer path saw both as
+/// [`TodoState::load`]`() == None` and `unwrap_or_default()`ed them into an
+/// empty list, which the very next write persisted over the real checklist. A
+/// reader that cannot parse a checklist must never replace it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableTodoState {
+    /// The `extension_data` key that failed, e.g. `todo.v1`.
+    pub key: String,
 }
 
 /// The legacy v0 blob, kept only so existing sessions can be migrated on read.
@@ -232,11 +315,33 @@ impl TodoState {
     /// all a session has. A blob that parses as a markdown checklist becomes
     /// structured items; freeform notes are preserved as the plan text so
     /// nothing is silently lost.
+    ///
+    /// ⚠ Read-only callers only. This collapses "nothing stored" and "stored,
+    /// unreadable" into one `None`; anything that goes on to WRITE must use
+    /// [`Self::try_load`] instead.
     pub fn load(extension_data: &ExtensionData) -> Option<Self> {
-        if let Some(state) = Self::from_extension_data(extension_data) {
-            return Some(state);
+        Self::try_load(extension_data).ok().flatten()
+    }
+
+    /// [`Self::load`], but telling "nothing stored" (`Ok(None)`) apart from
+    /// "something IS stored and this build cannot read it" (`Err`).
+    ///
+    /// Only `todo.v1` can produce the error, because `todo.v1` is the only key
+    /// [`Self::to_extension_data`] overwrites. An unparseable legacy `todo.v0`
+    /// is left exactly where it is and reported as "nothing to migrate", the
+    /// same as before — nothing writes over it.
+    pub fn try_load(extension_data: &ExtensionData) -> Result<Option<Self>, UnreadableTodoState> {
+        if let Some(value) = extension_data.get_extension_state(Self::EXTENSION_NAME, Self::VERSION)
+        {
+            return Self::from_value(value)
+                .map(Some)
+                .map_err(|_| UnreadableTodoState {
+                    key: format!("{}.{}", Self::EXTENSION_NAME, Self::VERSION),
+                });
         }
-        let legacy = LegacyTodoBlob::from_extension_data(extension_data)?;
+        let Some(legacy) = LegacyTodoBlob::from_extension_data(extension_data) else {
+            return Ok(None);
+        };
         let items = parse_markdown_checklist(&legacy.content);
         let plan = if items.is_empty() {
             let trimmed = legacy.content.trim();
@@ -244,7 +349,7 @@ impl TodoState {
         } else {
             None
         };
-        Some(Self { items, plan })
+        Ok(Some(Self { items, plan }))
     }
 
     /// Next sequential id (ids are stringified integers so they stay stable and
@@ -811,6 +916,145 @@ mod tests {
         // older reader sees the shape it expects.
         let round_tripped = serde_json::to_value(&loaded).unwrap();
         assert!(round_tripped["items"][0].get("parent").is_none());
+    }
+
+    /// The `todo.v1` reader EXACTLY as it stood before `TodoStatus::Blocked`
+    /// and `TodoItem::parent` were added — three status words, no nesting,
+    /// unknown fields ignored (there is no `deny_unknown_fields`).
+    ///
+    /// `Blocked` shipped under the unchanged `todo.v1` key, so every blob this
+    /// build writes is handed to a reader of exactly this shape on any older
+    /// install still on the machine. Its failure mode is not a missed item: the
+    /// writer's `unwrap_or_default()` puts an empty list back over the whole
+    /// checklist.
+    mod pre_blocked_v1_reader {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+        #[serde(rename_all = "snake_case")]
+        pub enum TodoStatus {
+            #[default]
+            Pending,
+            InProgress,
+            Completed,
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct TodoItem {
+            pub id: String,
+            pub text: String,
+            #[serde(default)]
+            pub status: TodoStatus,
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+        pub struct TodoState {
+            #[serde(default)]
+            pub items: Vec<TodoItem>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub plan: Option<String>,
+        }
+    }
+
+    #[test]
+    fn test_todo_blocked_blob_written_now_is_still_readable_by_a_pre_blocked_v1_reader() {
+        // The direction back-compat was never tested in: NEW blob -> OLD reader.
+        let mut todo = TodoState::new();
+        todo.add_items([
+            "ship it".to_string(),
+            "get the user's answer".to_string(),
+            "write it up".to_string(),
+        ]);
+        todo.update_item("1", Some(TodoStatus::Completed), None);
+        todo.update_item("2", Some(TodoStatus::Blocked), None);
+        todo.plan = Some("the plan".to_string());
+
+        let mut extension_data = ExtensionData::new();
+        todo.to_extension_data(&mut extension_data).unwrap();
+        let stored = extension_data.get_extension_state("todo", "v1").unwrap();
+
+        // On disk the blocked item wears a word a v1 reader knows, with the
+        // truth in the flag beside it.
+        assert_eq!(stored["items"][1]["status"], "in_progress");
+        assert_eq!(stored["items"][1]["blocked"], true);
+        // ...and only there: an unblocked item gains no flag.
+        assert!(stored["items"][0].get("blocked").is_none());
+
+        // The old reader parses the WHOLE blob, so no item is lost and nothing
+        // falls through to be overwritten.
+        let old: pre_blocked_v1_reader::TodoState =
+            serde_json::from_value(stored.clone()).expect("a v1 reader must still parse this blob");
+        assert_eq!(old.items.len(), 3);
+        assert_eq!(old.plan.as_deref(), Some("the plan"));
+        assert_eq!(old.items[1].text, "get the user's answer");
+        assert_eq!(
+            old.items[1].status,
+            pre_blocked_v1_reader::TodoStatus::InProgress
+        );
+
+        // And when that old build writes the list back, the round trip costs
+        // the blocked flag and nothing else — every item survives.
+        let mut rewritten = ExtensionData::new();
+        rewritten.set_extension_state("todo", "v1", serde_json::to_value(&old).unwrap());
+        let reloaded = TodoState::load(&rewritten).unwrap();
+        assert_eq!(reloaded.items.len(), 3);
+        assert_eq!(reloaded.items[0].status, TodoStatus::Completed);
+        assert_eq!(reloaded.items[1].status, TodoStatus::InProgress);
+        assert_eq!(reloaded.items[1].text, "get the user's answer");
+        assert_eq!(reloaded.items[2].text, "write it up");
+
+        // This build reads its own blob at full fidelity.
+        let ours = TodoState::load(&extension_data).unwrap();
+        assert_eq!(ours.items[1].status, TodoStatus::Blocked);
+    }
+
+    #[test]
+    fn test_todo_v1_blob_written_before_the_blocked_flag_still_loads_blocked() {
+        // A build between the variant landing and this fix wrote the literal
+        // word; those sessions must keep their blocked items.
+        let mut extension_data = ExtensionData::new();
+        extension_data.set_extension_state(
+            "todo",
+            "v1",
+            json!({"items": [{"id": "1", "text": "stuck", "status": "blocked"}]}),
+        );
+        let loaded = TodoState::load(&extension_data).unwrap();
+        assert_eq!(loaded.items[0].status, TodoStatus::Blocked);
+    }
+
+    #[test]
+    fn test_todo_v1_blob_this_build_cannot_parse_is_preserved_not_replaced() {
+        // What a build newer than this one might write next.
+        let future = json!({
+            "items": [{"id": "1", "text": "the real checklist", "status": "deferred"}],
+            "plan": "the real plan"
+        });
+        let mut extension_data = ExtensionData::new();
+        extension_data.set_extension_state("todo", "v1", future.clone());
+
+        // `try_load` can say "there IS something here and I cannot read it",
+        // which is what stops a writer replacing it. `load`'s `None` cannot,
+        // which is how a checklist got destroyed.
+        assert_eq!(
+            TodoState::try_load(&extension_data).unwrap_err(),
+            UnreadableTodoState {
+                key: "todo.v1".to_string()
+            }
+        );
+        assert!(TodoState::load(&extension_data).is_none());
+        assert_eq!(
+            extension_data.get_extension_state("todo", "v1"),
+            Some(&future)
+        );
+    }
+
+    #[test]
+    fn test_todo_v0_that_cannot_be_parsed_is_not_an_error() {
+        // `to_extension_data` only ever overwrites `todo.v1`, so a garbage v0 is
+        // in no danger and must not wedge the writer.
+        let mut extension_data = ExtensionData::new();
+        extension_data.set_extension_state("todo", "v0", json!("not a v0 blob"));
+        assert!(TodoState::try_load(&extension_data).unwrap().is_none());
     }
 
     #[test]
