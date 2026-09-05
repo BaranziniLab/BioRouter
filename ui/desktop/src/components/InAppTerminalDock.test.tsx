@@ -7,10 +7,7 @@ import {
   resetCloseTerminalPaneRegistry,
   resetNewTerminalPaneRegistry,
 } from '../utils/terminalFocus';
-import {
-  resetTerminalRunChannelForTests,
-  runInTerminal,
-} from '../utils/terminalRunChannel';
+import { resetTerminalRunChannelForTests, runInTerminal } from '../utils/terminalRunChannel';
 import { GENERATED_THEMES } from '../styles/themes.generated';
 
 interface FakeTerminal {
@@ -218,7 +215,7 @@ describe('InAppTerminalDock', () => {
       return view;
     }
 
-    it('writes the command into this dock\'s shell and SUBMITS it', async () => {
+    it("writes the command into this dock's shell and SUBMITS it", async () => {
       await renderDock();
 
       act(() => runInTerminal('tab-1', 'ls -la'));
@@ -321,7 +318,7 @@ describe('InAppTerminalDock', () => {
       expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
     });
 
-    it('a dock with no key — the onboarding card\'s — never receives one', async () => {
+    it("a dock with no key — the onboarding card's — never receives one", async () => {
       // That dock belongs to no chat, and a transcript\'s Run button must never
       // find it.
       await renderDock({ dockKey: undefined });

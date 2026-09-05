@@ -31,6 +31,7 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
         messages={[thinkingMessage()]}
         toolCallNotifications={new Map()}
         append={vi.fn()}
+        onRunInTerminal={null}
         onOpenArtifact={noopOpenArtifact}
       />
     );
@@ -53,6 +54,7 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
         messages={[thinkingMessage()]}
         toolCallNotifications={new Map()}
         append={vi.fn()}
+        onRunInTerminal={null}
         onOpenArtifact={noopOpenArtifact}
       />
     );

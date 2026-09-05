@@ -49,6 +49,12 @@ interface ProgressiveMessageListProps {
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
   /**
+   * Hand a shell code block to this chat's in-app terminal, or `null` on a
+   * surface with no terminal (a saved transcript). Required and nullable so
+   * every surface has to answer — see BioRouterMessage's prop of the same name.
+   */
+  onRunInTerminal: ((command: string) => void) | null;
+  /**
    * Live turn state, supplied only by an interactive chat. Read-only replays
    * (SessionHistoryView) omit these, which is what guarantees the trailing
    * activity indicator can never appear on a saved session.
@@ -75,6 +81,7 @@ export default function ProgressiveMessageList({
   onRenderingComplete,
   submitElicitationResponse,
   onOpenArtifact,
+  onRunInTerminal,
   workingDir,
   chatState,
   turnStartedAt,
@@ -271,6 +278,7 @@ export default function ProgressiveMessageList({
                 }
                 submitElicitationResponse={submitElicitationResponse}
                 onOpenArtifact={onOpenArtifact}
+                onRunInTerminal={onRunInTerminal}
                 workingDir={workingDir}
               />
             )}
@@ -291,6 +299,7 @@ export default function ProgressiveMessageList({
     toolCallChains,
     submitElicitationResponse,
     onOpenArtifact,
+    onRunInTerminal,
     workingDir,
   ]);
 

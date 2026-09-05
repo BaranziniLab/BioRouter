@@ -74,6 +74,9 @@ export function isRunnableShellLanguage(language: string | null | undefined): bo
  * Written with codepoint escapes on purpose: a literal control byte in a
  * source file is invisible in every diff that would review it.
  */
+// Matching control characters IS the point here; no-control-regex exists to
+// catch one that arrived by accident.
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
 /**
