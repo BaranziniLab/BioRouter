@@ -11,7 +11,7 @@ assignees: ''
 💡 Before filing, please check common issues:  
 [Biorouter Troubleshooting Guide](http://biorouter.ucsf.edu/docs)
 
-📦 To help us debug faster, please describe your setup and attach any relevant logs from `~/.config/biorouter/logs/`.  
+📦 To help us debug faster, attach a diagnostics bundle: in the app, **Chat summary → Diagnostics → Generate diagnostics**. It collects the transcript, a redacted copy of your configuration and the relevant logs. Read it before attaching — it contains the whole conversation.  
 👉 [Full troubleshooting guide](http://biorouter.ucsf.edu/docs)
 
 A clear and concise description of what the bug is.

@@ -1,0 +1,284 @@
+//! `platform__report_bug` end to end through a real [`Agent::reply`].
+//!
+//! ⚠ What this covers that the unit tests cannot: that a tool call the MODEL
+//! makes actually reaches the handler. Those two halves live in different files
+//! and neither refers to the other — the tool is declared in `platform_tools.rs`
+//! and routed by a `if tool_call.name == …` branch in the agent's dispatch — so
+//! a tool can be advertised with no route and the only symptom is
+//! `Tool 'platform__report_bug' not found` at the moment the user asks for it.
+//! `platform_tools`' own guard greps `agent.rs` for the branch, which proves the
+//! text exists; this proves the call arrives.
+//!
+//! ⚠ It also cannot post. Nothing here approves the card, and
+//! `issue::file_with_gh` refuses outright under `cfg!(test)` besides.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use biorouter::agents::extension::ExtensionConfig;
+use biorouter::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME;
+use biorouter::agents::{Agent, AgentConfig, SessionConfig};
+use biorouter::config::permission::PermissionManager;
+use biorouter::config::BioRouterMode;
+use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::model::ModelConfig;
+use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+use biorouter::providers::errors::ProviderError;
+use biorouter::session::session_manager::{SessionManager, SessionType};
+use futures::StreamExt;
+use rmcp::model::{CallToolRequestParams, Tool};
+use tempfile::TempDir;
+
+/// Calls `platform__report_bug` on its first turn, then answers with text.
+///
+/// It also records the tool list it was handed, which is the other half of the
+/// question: a tool the model is never offered is one it can never call, and
+/// that failure looks nothing like a missing dispatch branch.
+struct ReportingProvider {
+    turns: AtomicUsize,
+    offered: Mutex<Vec<String>>,
+    arguments: serde_json::Value,
+}
+
+#[async_trait]
+impl Provider for ReportingProvider {
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::new(
+            "reporting",
+            "Reporting",
+            "",
+            "reporting-model",
+            vec![],
+            "",
+            vec![],
+        )
+    }
+
+    fn get_name(&self) -> &str {
+        "reporting"
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        *self.offered.lock().unwrap() = tools.iter().map(|t| t.name.to_string()).collect();
+        let usage = ProviderUsage::new("reporting-model".to_string(), Usage::default());
+        if self.turns.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok((
+                Message::assistant().with_tool_request(
+                    "report-1",
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        name: PLATFORM_REPORT_BUG_TOOL_NAME.into(),
+                        arguments: self.arguments.as_object().cloned(),
+                        meta: None,
+                    }),
+                ),
+                usage,
+            ));
+        }
+        Ok((Message::assistant().with_text("done"), usage))
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("reporting-model")
+    }
+}
+
+/// Restores the process-global proof-availability flag on drop.
+///
+/// ⚠ Necessary, and the reason is a measured failure: without it, the test that
+/// sets the flag to `false` ran concurrently with the others in this binary and
+/// emptied THEIR tool rosters — which reads exactly like "the tool is never
+/// advertised", i.e. like the bug the suite exists to catch. `#[serial]` on top
+/// keeps the window closed; the guard keeps a panicking test from leaving the
+/// flag off for everything after it.
+struct ProofAvailable(bool);
+
+impl ProofAvailable {
+    fn set(available: bool) -> Self {
+        let previous = biorouter::pending_user_action::user_proof_available();
+        biorouter::pending_user_action::set_user_proof_available(available);
+        Self(previous)
+    }
+}
+
+impl Drop for ProofAvailable {
+    fn drop(&mut self) {
+        biorouter::pending_user_action::set_user_proof_available(self.0);
+    }
+}
+
+async fn run_turn(arguments: serde_json::Value) -> (Vec<String>, String) {
+    let dir = TempDir::new().unwrap();
+    let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+    let agent = Arc::new(Agent::with_config(AgentConfig::new(
+        session_manager,
+        permission_manager,
+        None,
+        BioRouterMode::Auto,
+    )));
+    let session = agent
+        .config
+        .session_manager
+        .create_session(
+            PathBuf::from("/workspace/demo"),
+            "bug-report-e2e".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+
+    let provider = Arc::new(ReportingProvider {
+        turns: AtomicUsize::new(0),
+        offered: Mutex::new(Vec::new()),
+        arguments,
+    });
+    agent
+        .update_provider(Arc::clone(&provider) as Arc<dyn Provider>, &session.id)
+        .await
+        .unwrap();
+
+    // `no_human_surface` is the production statement of "there is nobody to
+    // answer a card". It is what stops the file half parking forever, and it is
+    // the same thing `POST /agent/call_tool` sets for the same reason.
+    let events = biorouter::user_surface::without_human_surface(async {
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("report a bug"),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let mut collected = Vec::new();
+        while let Some(event) = stream.next().await {
+            collected.push(event);
+        }
+        collected
+    })
+    .await;
+
+    // The tool response the agent produced, whatever its shape.
+    let mut responses = String::new();
+    for event in events.into_iter().flatten() {
+        if let biorouter::agents::AgentEvent::Message(message) = event {
+            for content in &message.content {
+                if let MessageContent::ToolResponse(response) = content {
+                    match &response.tool_result {
+                        Ok(result) => {
+                            for item in &result.content {
+                                if let Some(text) = item.as_text() {
+                                    responses.push_str(&text.text);
+                                    responses.push('\n');
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            responses.push_str(&error.message);
+                            responses.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let offered = provider.offered.lock().unwrap().clone();
+    (offered, responses)
+}
+
+/// The tool is offered to the model, and calling it reaches the handler.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn the_model_is_offered_the_reporter_and_its_call_reaches_the_handler() {
+    let _proof = ProofAvailable::set(true);
+    let (offered, response) = run_turn(serde_json::json!({"action": "analyze"})).await;
+
+    assert!(
+        offered
+            .iter()
+            .any(|name| name == PLATFORM_REPORT_BUG_TOOL_NAME),
+        "the model was never offered the bug reporter, so no dispatch branch could \
+         have helped: {offered:?}"
+    );
+    assert!(
+        !response.contains("not found"),
+        "the advertised tool has no route in the agent's dispatch: {response}"
+    );
+    // The push-back: an empty session with no description asks rather than files.
+    assert!(
+        response.contains("ASK THE USER"),
+        "the handler's own answer must come back through the loop: {response}"
+    );
+}
+
+/// A `file` call with a real report gets as far as the approval and no further.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn filing_stops_at_the_approval_and_posts_nothing() {
+    let _proof = ProofAvailable::set(true);
+    let (_offered, response) = run_turn(serde_json::json!({
+        "action": "file",
+        "title": "Auto Visualiser renders a blank panel for a single-row dataset",
+        "description": "Asking for a chart of a one-row table produces an empty panel.",
+        "steps": ["Open a chat", "Ask for a bar chart of one row"],
+        "expected": "The chart renders with one bar."
+    }))
+    .await;
+
+    assert!(
+        response.contains("Nothing was filed"),
+        "with nobody to approve, the tool must report that and post nothing: {response}"
+    );
+    assert!(!response.contains("Filed:"), "{response}");
+    assert!(!response.contains("not found"), "{response}");
+}
+
+/// ⚠ Advertisement is not unconditional. On a daemon that cannot obtain proof
+/// of a person the tool is withheld from the model entirely — and this asserts
+/// it at the roster the model is actually handed, not at the gate struct.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn a_daemon_that_cannot_ask_a_person_does_not_offer_the_reporter() {
+    let _proof = ProofAvailable::set(false);
+    let (offered, _response) = run_turn(serde_json::json!({"action": "analyze"})).await;
+
+    assert!(
+        !offered
+            .iter()
+            .any(|name| name == PLATFORM_REPORT_BUG_TOOL_NAME),
+        "a tool whose approval can never be granted must not be advertised: {offered:?}"
+    );
+}
+
+/// Documents what the roster looked like, so a future reader can tell an
+/// advertisement problem from a routing one at a glance.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn the_platform_prefix_is_how_the_reporter_is_named_to_the_model() {
+    let _proof = ProofAvailable::set(true);
+    let (offered, _) = run_turn(serde_json::json!({"action": "analyze"})).await;
+    assert!(
+        offered
+            .iter()
+            .any(|name| name.starts_with("platform__") && name.ends_with("report_bug")),
+        "{offered:?}"
+    );
+    // Not an extension: nothing in the manager advertises it.
+    let _ = ExtensionConfig::default();
+}

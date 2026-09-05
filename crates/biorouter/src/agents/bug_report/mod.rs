@@ -321,15 +321,15 @@ fn approval_request(
     .expect("the approval arguments are an object")
     .clone();
 
-    let redirected = (repo != issue::DEFAULT_REPO)
-        .then(|| {
-            format!(
-                " ⚠ This is NOT the Biorouter project's own tracker \
-                 (github.com/{}); it has been redirected to github.com/{repo}.",
-                issue::DEFAULT_REPO
-            )
-        })
-        .unwrap_or_default();
+    let redirected = if repo == issue::DEFAULT_REPO {
+        String::new()
+    } else {
+        format!(
+            " ⚠ This is NOT the Biorouter project's own tracker (github.com/{}); it has \
+             been redirected to github.com/{repo}.",
+            issue::DEFAULT_REPO
+        )
+    };
 
     UserActionRequest::ToolApproval(ToolApprovalRequest {
         tool_name: REPORT_BUG_TOOL_NAME.to_string(),
@@ -376,8 +376,33 @@ pub async fn handle_report_bug(
         )
         .await;
     }
+    file_report(
+        &arguments,
+        session,
+        evidence,
+        user_description,
+        &scrubbed_working_dir,
+        home,
+        cancel,
+    )
+    .await
+}
 
-    let title = string_arg(&arguments, "title").ok_or_else(|| {
+/// Scrub the model's prose, render the body, and run the harness over it.
+///
+/// Returns the draft, the rendered body and the title's own scrub result — the
+/// last so the receipt can say what was removed without re-running anything.
+///
+/// Split out of [`file_report`] to stay under the `too_many_lines` baseline,
+/// and because everything here is pure: no approval, no network, no clock.
+fn prepare_report(
+    arguments: &Value,
+    user_description: Option<String>,
+    evidence: Evidence,
+    scrubbed_working_dir: &str,
+    home: Option<&std::path::Path>,
+) -> Result<(Draft, String, redact::Scrubbed), ErrorData> {
+    let title = string_arg(arguments, "title").ok_or_else(|| {
         invalid_params(
             "`title` is required to file. Call this tool with `action: \"analyze\"` first \
              if you do not yet know what the report should say.",
@@ -397,21 +422,21 @@ pub async fn handle_report_bug(
     let draft = Draft {
         title: title_scrub.text.clone(),
         description: redact::scrub(&description, home).text,
-        steps: steps_arg(&arguments)
+        steps: steps_arg(arguments)
             .iter()
             .map(|step| redact::scrub(step, home).text)
             .collect(),
-        expected: string_arg(&arguments, "expected")
+        expected: string_arg(arguments, "expected")
             .map(|expected| redact::scrub(&expected, home).text)
             .unwrap_or_default(),
-        additional: string_arg(&arguments, "additional")
+        additional: string_arg(arguments, "additional")
             .map(|additional| redact::scrub(&additional, home).text),
     };
 
     // The environment block is assembled from the evidence, whose working
     // directory is a real path; scrub the evidence too, not only the prose.
     let evidence = Evidence {
-        working_dir: scrubbed_working_dir.clone(),
+        working_dir: scrubbed_working_dir.to_string(),
         failures: evidence
             .failures
             .iter()
@@ -448,6 +473,30 @@ pub async fn handle_report_bug(
         )));
     }
 
+    Ok((draft, body, title_scrub))
+}
+
+/// The `file` half: write the report, check it, ask, post.
+///
+/// Split from [`handle_report_bug`] so that neither half is over the
+/// `too_many_lines` baseline, and because the boundary is a real one — nothing
+/// below here runs for an `analyze` call.
+async fn file_report(
+    arguments: &Value,
+    session: &Session,
+    evidence: Evidence,
+    user_description: Option<String>,
+    scrubbed_working_dir: &str,
+    home: Option<&std::path::Path>,
+    cancel: Option<CancellationToken>,
+) -> ToolResult<Vec<Content>> {
+    let (draft, body, title_scrub) = prepare_report(
+        arguments,
+        user_description,
+        evidence,
+        scrubbed_working_dir,
+        home,
+    )?;
     let repo = issue::repo();
 
     // Privacy: decided AFTER the report is written, deliberately. The work is
@@ -503,17 +552,31 @@ pub async fn handle_report_bug(
         );
     }
 
-    let attach = format!(
-        "\n\nTo attach the full diagnostics bundle — transcript, redacted config, logs — \
-         open Chat summary → Diagnostics → Generate diagnostics and drag the zip onto the \
-         issue. Read it first: it contains the whole conversation."
-    );
+    post_report(filer, &repo, &draft, &body, &title_scrub).await
+}
+
+/// Everything after the approval: do the thing, and say what happened.
+///
+/// Every arm returns an Ok result rather than an error, including the ones that
+/// could not post. The user approved this exact text; handing it back to be
+/// pasted is a worse outcome than an issue URL and a much better one than an
+/// error that loses the report.
+async fn post_report(
+    filer: Filer,
+    repo: &str,
+    draft: &Draft,
+    body: &str,
+    title_scrub: &redact::Scrubbed,
+) -> ToolResult<Vec<Content>> {
+    let attach = "\n\nTo attach the full diagnostics bundle — transcript, redacted config, \
+                  logs — open Chat summary → Diagnostics → Generate diagnostics and drag the \
+                  zip onto the issue. Read it first: it contains the whole conversation.";
 
     match filer {
         Filer::GhCli => {
             let body_file = std::env::temp_dir()
                 .join(format!("biorouter-bug-report-{}.md", uuid::Uuid::new_v4()));
-            match issue::file_with_gh(&repo, &draft.title, &body, &body_file).await {
+            match issue::file_with_gh(repo, &draft.title, body, &body_file).await {
                 Ok(url) => text(format!(
                     "Filed: {url}\n\nTitle: {}\nRedacted before posting: {}.{attach}",
                     draft.title,
@@ -523,7 +586,7 @@ pub async fn handle_report_bug(
                     // Falling back rather than failing: the user approved this
                     // exact text, and a `gh` that broke is not a reason to make
                     // them start over.
-                    let fallback = issue::compose_url(&repo, &draft.title, &body);
+                    let fallback = issue::compose_url(repo, &draft.title, body);
                     text(match fallback {
                         Some(url) => format!(
                             "The GitHub CLI could not create the issue ({error}), so nothing \
