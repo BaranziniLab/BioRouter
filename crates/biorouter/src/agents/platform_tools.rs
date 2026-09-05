@@ -1,5 +1,5 @@
-//! The `platform__*` tools: the capabilities the **Agent** owns rather than any
-//! extension.
+//! The `platform__*` tools: the six capabilities the **Agent** owns rather
+//! than any extension.
 //!
 //! They are advertised by [`Agent::list_tools_for`] and dispatched by
 //! [`Agent::dispatch_tool_call`], and they exist nowhere in the
@@ -20,7 +20,7 @@
 //! `platform.ingest_source` answered `Module not found: platform`. The exemption
 //! calls [`is_platform_tool_name`] — which IS a hand-written list of names,
 //! [`PLATFORM_TOOL_NAMES`]. The property being bought is not "no list"; it is
-//! ONE list instead of a second copy at each gate, so a fifth platform tool is
+//! ONE list instead of a second copy at each gate, so the next platform tool is
 //! covered everywhere the day it is added to that one.
 //!
 //! [`Agent::list_tools_for`]: crate::agents::Agent
@@ -35,6 +35,7 @@ pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conve
 pub const PLATFORM_INGEST_SOURCE_TOOL_NAME: &str = "platform__ingest_source";
 pub const PLATFORM_READ_SESSION_BLOB_TOOL_NAME: &str = "platform__read_session_blob";
 pub const PLATFORM_MANAGE_WORKFLOW_TOOL_NAME: &str = "platform__manage_workflow";
+pub const PLATFORM_REPORT_BUG_TOOL_NAME: &str = "platform__report_bug";
 
 /// The extension key these tools are advertised under. Not a registered
 /// extension — `PLATFORM_EXTENSIONS` has no `platform` entry and the
@@ -53,6 +54,7 @@ pub const PLATFORM_TOOL_NAMES: &[&str] = &[
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
     PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
     PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
+    PLATFORM_REPORT_BUG_TOOL_NAME,
 ];
 
 /// Is this the name of a tool the **agent loop** dispatches?
@@ -69,15 +71,15 @@ pub fn is_platform_tool_name(name: &str) -> bool {
 /// Which of them the caller's session may see.
 ///
 /// Each field is one gate, sampled by the Agent — the only thing that can read
-/// all three — and passed in.
+/// all of them — and passed in.
 ///
 /// Prescriptive, not a report of current practice: the only construction site
 /// is `Agent::platform_tool_gates`, and `code_execution`'s catalogue consumes
 /// no gates at all (the platform tools are never in it). Should a second reader
-/// ever appear it **must** take this value rather than re-derive it — two of the
-/// three gates (the scheduler handle, the Knowledge capability) are per-agent
-/// state no other caller can see, and the third is a process-global flag that
-/// must be sampled once, not re-read inside a gate.
+/// ever appear it **must** take this value rather than re-derive it — two gates
+/// (the scheduler handle, the Knowledge capability) are per-agent state no other
+/// caller can see, and the other two are process-global flags that must be
+/// sampled once, not re-read inside a gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformToolGates {
     /// `AgentConfig::scheduler_service.is_some()` — without a scheduler the
@@ -108,6 +110,23 @@ pub struct PlatformToolGates {
     /// tool: `list` and `read` are useful on a `biorouter serve` daemon that can
     /// never approve a write.
     pub workflows: bool,
+    /// `pending_user_action::user_proof_available()` — a person can be asked
+    /// for proof-backed approval in this process at all.
+    ///
+    /// Filing publishes to a public tracker, so it parks on an approval that
+    /// sets `requires_user_proof`. A `biorouter serve` daemon is spawned with
+    /// `Stdio::null()` and holds no proof-of-user key, so that approval refuses
+    /// forever there — and a tool whose approval can never be granted must not
+    /// be OFFERED. Reporting the refusal honestly is necessary and not
+    /// sufficient: a model that is offered a bug reporter will propose filing a
+    /// bug, and the user then meets a card whose buttons cannot work. Same
+    /// rule, same reason, as `install_extension`'s `can_ask_a_person`.
+    ///
+    /// ⚠ It withholds the ANALYSIS half too, which is read-only and would work.
+    /// A tool advertised as "report a bug" that can only ever analyse is worse
+    /// than one that is absent: the model reaches it, produces a report, and
+    /// the turn ends with nowhere to put it.
+    pub bug_report: bool,
 }
 
 impl PlatformToolGates {
@@ -139,6 +158,9 @@ impl PlatformToolGates {
             tools.push(manage_workflow_tool(
                 crate::pending_user_action::user_proof_available(),
             ));
+        }
+        if self.bug_report {
+            tools.push(report_bug_tool());
         }
         tools
     }
@@ -404,6 +426,83 @@ pub fn manage_workflow_tool(can_ask_a_person: bool) -> Tool {
         destructive_hint: Some(can_ask_a_person),
         idempotent_hint: Some(false),
         open_world_hint: Some(false),
+    })
+}
+
+/// The agent-callable bug reporter.
+///
+/// The description is written to make the model reach for `analyze` first and
+/// to make it ASK rather than guess, because both are behaviours a schema
+/// cannot enforce: nothing stops a model calling `file` with an invented
+/// report, and the only defences after that are the harness (which checks the
+/// text, not its truth) and the approval card (which asks a person to read a
+/// paragraph they did not ask for). The cheapest place to prevent a fabricated
+/// bug report is here.
+pub fn report_bug_tool() -> Tool {
+    Tool::new(
+        PLATFORM_REPORT_BUG_TOOL_NAME.to_string(),
+        indoc! {r#"
+            Report a bug in Biorouter itself to its issue tracker.
+
+            Use this when the user says "report a bug", "file an issue",
+            "something is broken in Biorouter", or describes Biorouter
+            misbehaving and asks you to tell someone. This is for defects in
+            Biorouter — the app, the agent, an extension, the interface — not
+            for problems in the user's own code or data.
+
+            Call it TWICE.
+
+            1. `action: "analyze"` first, always. It reads this chat's own
+               record of failed tool calls, grades them, and hands back the
+               environment and the failure list. It files nothing.
+               - If it says it cannot tell what went wrong, ASK THE USER what
+                 they want to report and wait for their answer. Do not invent a
+                 report from the failures it listed. Ask a specific question
+                 naming what you can see.
+               - If a failure is labelled as a deliberate refusal, that is
+                 Biorouter's privacy or permission boundary working. Do not
+                 file it unless the user says the wrong thing was refused.
+
+            2. `action: "file"` with the report you wrote: `title`,
+               `description` (what happened and why it is wrong), `steps` to
+               reproduce, `expected`, and `additional` context. Write what was
+               actually observed; do not pad it with guesses about the cause.
+
+            Biorouter adds the version, OS, provider, model, enabled extensions
+            and the failure list itself — do not repeat them. It removes home
+            paths, usernames and anything credential-shaped, refuses the report
+            if identifying material survives, and requires the user to approve
+            the exact text before anything is published. A GitHub issue is
+            public and permanent; a chat classified private will not be filed
+            from at all.
+        "#}
+        .to_string(),
+        object!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["analyze", "file"],
+                    "description": "`analyze` reads this chat and reports what it finds, filing nothing. `file` submits the report you wrote. Omitting this analyses unless both `title` and `description` are present."
+                },
+                "title": {"type": "string", "description": "One line a maintainer can recognise in a list of issues"},
+                "description": {"type": "string", "description": "What happened and why it is wrong. Becomes the report's `Describe the bug` section. With `action: \"analyze\"`, the user's own words for the problem, if they gave any."},
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Steps to reproduce, one per entry. Omit rather than invent."
+                },
+                "expected": {"type": "string", "description": "What should have happened instead"},
+                "additional": {"type": "string", "description": "Anything else that helps: what the user was trying to do, when it started, what is different about this machine"}
+            }
+        }),
+    ).annotate(ToolAnnotations {
+        title: Some("Report a Biorouter bug".to_string()),
+        read_only_hint: Some(false),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        // It reaches github.com.
+        open_world_hint: Some(true),
     })
 }
 
