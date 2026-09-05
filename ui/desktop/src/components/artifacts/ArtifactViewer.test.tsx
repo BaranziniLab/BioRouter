@@ -972,6 +972,82 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.queryByText(/ENOENT/)).not.toBeInTheDocument();
   });
 
+  // The same empty-state, told the truth. A path the assistant only NAMED — the
+  // reproduced defect was a suggestion, `~/Desktop/kdps-intent.md`, that had
+  // never existed — was described as "moved, renamed, or deleted", sending the
+  // reader to look for a file in their Trash. `mentionedOnly` survives only when
+  // nothing confirmed the path, so this copy is backed by the transcript.
+  it('says a mentioned-only path was never created, rather than deleted', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'error',
+      title: 'kdps-intent.md',
+      path: '/Users/wanjun/Desktop/kdps-intent.md',
+      error: "This file was moved, renamed, or deleted, so it can't be previewed anymore.",
+      code: 'ENOENT',
+      found: false,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'file',
+            title: 'kdps-intent.md',
+            path: '/Users/wanjun/Desktop/kdps-intent.md',
+            mentionedOnly: true,
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-error-state')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This file doesn't exist. The assistant mentioned this path but never created it."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/moved, renamed, or deleted/)).not.toBeInTheDocument();
+  });
+
+  // Provenance only ever overrides ENOENT. A denial says something true about
+  // the path whoever named it, and must not be restated as a claim about
+  // creation.
+  it('keeps the permission message for a mentioned-only path it may not read', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'error',
+      title: 'id_rsa',
+      path: '/Users/wanjun/.ssh/id_rsa',
+      error: "Biorouter doesn't have permission to read this file.",
+      code: 'EACCES',
+      found: false,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'file',
+            title: 'id_rsa',
+            path: '/Users/wanjun/.ssh/id_rsa',
+            mentionedOnly: true,
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-error-state')).toBeInTheDocument();
+    expect(
+      screen.getByText("Biorouter doesn't have permission to read this file.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/never created it/)).not.toBeInTheDocument();
+  });
+
   it('renders the IPC-level load failure through the same empty-state', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockRejectedValue(

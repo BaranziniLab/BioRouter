@@ -87,6 +87,11 @@ import {
   fileArtifactPathsFromToolCall,
 } from './artifacts/artifactUtils';
 import { referencedFilePaths } from './artifacts/artifactFileProvenance';
+import {
+  useFileLinkExistences,
+  type FileLinkExistence,
+  type FilePathCheckRequest,
+} from './artifacts/fileLinkStatus';
 import type {
   CallToolResponse,
   Content,
@@ -168,14 +173,30 @@ export function decideArtifactAutoOpen(params: {
   reportedMessageCount: number;
   loadedMessageCount: number;
   artifactKeys: readonly string[];
+  /**
+   * The mentioned-file existence gate has not settled, so `artifactKeys` is a
+   * PARTIAL list. Required rather than optional: a caller that forgets it takes
+   * a baseline mid-sweep, and every path confirmed a moment later then reads as
+   * newly created — springing the panel on a reopened saved session, which is
+   * the exact failure the snapshot exists to prevent.
+   */
+  gatePending: boolean;
 }): ArtifactAutoOpenDecision {
-  const { scanDone, knownKeys, reportedMessageCount, loadedMessageCount, artifactKeys } = params;
+  const {
+    scanDone,
+    knownKeys,
+    reportedMessageCount,
+    loadedMessageCount,
+    artifactKeys,
+    gatePending,
+  } = params;
 
   if (!scanDone) {
     // A saved session that claims messages but has not hydrated its transcript
     // yet: snapshotting now would bank an empty baseline and then treat the
     // whole history as "new", springing the panel on reopen. Defer the baseline.
-    if (reportedMessageCount > 0 && loadedMessageCount === 0) {
+    // A gate still resolving is the same hazard on a shorter timescale.
+    if ((reportedMessageCount > 0 && loadedMessageCount === 0) || gatePending) {
       return { action: 'wait' };
     }
     return { action: 'snapshot', knownKeys: new Set(artifactKeys) };
@@ -402,12 +423,111 @@ function artifactKey(artifact: ArtifactSource) {
   }
 }
 
+// Paths pulled out of assistant PROSE. `mentionedOnly` is the whole reason this
+// is a separate function from the tool-call extractor: prose is a claim ("write
+// it to `~/Desktop/spec.md` and tell me the path" names a file that has never
+// existed), a successful tool call is a receipt. The flag follows the artifact
+// to `applyMentionedFileGate`, which is what stops a claim becoming a card.
 function collectTextArtifacts(text: string, workingDir?: string): ArtifactSource[] {
   return referencedFilePaths(text, workingDir, PREVIEWABLE_TEXT_ARTIFACT_RE).map((path) => ({
     kind: 'file',
     title: basenameFromPath(path),
     path,
+    mentionedOnly: true,
   }));
+}
+
+/** The paths the gate has to ask about — the mentioned-only ones, in tab order. */
+export function mentionedArtifactPaths(artifacts: readonly ArtifactSource[]): string[] {
+  return artifacts.flatMap((artifact) =>
+    artifact.kind === 'file' && artifact.mentionedOnly ? [artifact.path] : []
+  );
+}
+
+/**
+ * Existence gate for prose-derived file cards.
+ *
+ * The same extractor feeds chat links and this panel, and only the link half was
+ * hardened: a path the assistant merely *suggested* still became a card, opened
+ * in a tab, and rendered an error. Clicking it was already denied by the
+ * main-process allowlist, so this is not a read hole — it is chrome a model (or
+ * a prompt injection reaching one) can put in the user's panel, and a panel full
+ * of dead cards is a panel nobody trusts.
+ *
+ * The rule is the link path's rule, unchanged: a dead path is never a card, **not
+ * even for one frame**, so `checking` is excluded and a confirmed hit *upgrades*
+ * to a card rather than a hit being walked back. `unchecked` — no bridge, on
+ * `biorouter serve` or in a test — keeps the pre-existing behaviour of showing
+ * everything, because "start hidden" there would mean the panel silently loses
+ * every prose artifact it has ever had.
+ *
+ * A `present` verdict also CLEARS `mentionedOnly`: the file is on disk, so a read
+ * failure after this point is a real disappearance and deserves the copy that
+ * says so. Only an `unchecked` card keeps the flag.
+ */
+export function applyMentionedFileGate(
+  artifacts: readonly ArtifactSource[],
+  existenceOf: (path: string) => FileLinkExistence
+): readonly ArtifactSource[] {
+  // Identity is preserved when nothing is gated, so the common case (no prose
+  // paths at all) does not churn the memo that feeds the panel.
+  if (!artifacts.some((artifact) => artifact.kind === 'file' && artifact.mentionedOnly)) {
+    return artifacts;
+  }
+  const kept: ArtifactSource[] = [];
+  for (const artifact of artifacts) {
+    if (artifact.kind !== 'file' || !artifact.mentionedOnly) {
+      kept.push(artifact);
+      continue;
+    }
+    switch (existenceOf(artifact.path)) {
+      case 'present':
+        kept.push({ ...artifact, mentionedOnly: undefined });
+        break;
+      case 'unchecked':
+        kept.push(artifact);
+        break;
+      // 'checking' and 'missing' are not cards.
+    }
+  }
+  return kept;
+}
+
+/**
+ * The artifact list the panel renders: collected from the transcript, then
+ * existence-gated.
+ *
+ * One hook rather than three memos at the call site, because the three steps are
+ * a single contract — collect, ask about the prose half, drop what is not there
+ * — and the defect this fixes was precisely a step of that contract existing for
+ * one consumer and not the other. `gatePending` rides along because the panel's
+ * one-time auto-open baseline must not be taken from a half-answered list.
+ */
+export function useSessionArtifacts(
+  messages: Message[],
+  workingDir?: string,
+  streamingTextMessageIndex?: number
+): { artifacts: readonly ArtifactSource[]; gatePending: boolean } {
+  const collected = useMemo(
+    () => collectArtifactsFromMessages(messages, workingDir, streamingTextMessageIndex),
+    [messages, workingDir, streamingTextMessageIndex]
+  );
+  // Only the prose half is asked about. A path from a successful tool call is a
+  // receipt, which beats a stat — and gating it would put a round trip in front
+  // of the common case.
+  const requests = useMemo<FilePathCheckRequest[]>(
+    () =>
+      mentionedArtifactPaths(collected).map((path) =>
+        workingDir ? { path, workingDir } : { path }
+      ),
+    [collected, workingDir]
+  );
+  const existence = useFileLinkExistences(requests);
+  const artifacts = useMemo(
+    () => applyMentionedFileGate(collected, (path) => existence.of(path, workingDir)),
+    [collected, existence, workingDir]
+  );
+  return { artifacts, gatePending: existence.pending };
 }
 
 function toolCallOf(content: {
@@ -502,12 +622,31 @@ export function collectArtifactsFromMessages(
   const artifacts: ArtifactSource[] = [];
   const seen = new Set<string>();
   const visibleToolCalls = new Map<string, { name: string; arguments: unknown }>();
+  // Where each file path landed, so a prose mention can be promoted in place by
+  // the tool call that later proves it. Indices are stable: artifacts are only
+  // ever appended or replaced, never spliced.
+  const fileArtifactSlot = new Map<string, number>();
   const addArtifact = (artifact: ArtifactSource | null) => {
     if (!artifact) return;
     const key = artifactKey(artifact);
     if (seen.has(key)) return;
     seen.add(key);
     artifacts.push(artifact);
+    if (artifact.kind === 'file') fileArtifactSlot.set(artifact.path, artifacts.length - 1);
+  };
+
+  // A path is not a mere mention once a successful tool call has written it —
+  // even though the prose naming it was collected first and won the dedupe. Drop
+  // the flag rather than the entry, so the card keeps its position in tab order
+  // and skips the existence gate it no longer needs.
+  const confirmWritten = (path: string): boolean => {
+    const slot = fileArtifactSlot.get(path);
+    if (slot === undefined) return false;
+    const existing = artifacts[slot];
+    if (existing.kind === 'file' && existing.mentionedOnly) {
+      artifacts[slot] = { ...existing, mentionedOnly: undefined };
+    }
+    return true;
   };
 
   for (const [messageIndex, message] of messages.entries()) {
@@ -546,6 +685,7 @@ export function collectArtifactsFromMessages(
       // its path behind, in the arguments of the call that created it.
       if (isSuccessfulToolResult(content.toolResult)) {
         for (const path of fileArtifactPathsFromToolCall(call.name, call.arguments, workingDir)) {
+          if (confirmWritten(path)) continue;
           addArtifact({ kind: 'file', title: basenameFromPath(path), path });
         }
       }
@@ -1534,9 +1674,13 @@ function BaseChatContent({
     messages[messages.length - 1]?.role === 'assistant'
       ? messages.length - 1
       : undefined;
-  const sessionArtifacts = useMemo(
-    () => collectArtifactsFromMessages(messages, sessionWorkingDir, streamingTextMessageIndex),
-    [messages, sessionWorkingDir, streamingTextMessageIndex]
+  // Existence-gated, the way chat links already are (`MarkdownContent` ->
+  // `useFileLinkExistence`): a path the assistant only NAMED is not a card until
+  // the main process confirms it is really there.
+  const { artifacts: sessionArtifacts, gatePending } = useSessionArtifacts(
+    messages,
+    sessionWorkingDir,
+    streamingTextMessageIndex
   );
   const sessionToolCallCount = useMemo(() => countSessionToolCalls(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
@@ -1555,6 +1699,7 @@ function BaseChatContent({
       reportedMessageCount: session.message_count ?? 0,
       loadedMessageCount: messages.length,
       artifactKeys: sessionArtifacts.map(artifactKey),
+      gatePending,
     });
     switch (decision.action) {
       case 'wait':
@@ -1574,7 +1719,14 @@ function BaseChatContent({
         handleOpenArtifact(sessionArtifacts[decision.openIndex]);
         return;
     }
-  }, [handleOpenArtifact, messages.length, presentedArtifact, session, sessionArtifacts]);
+  }, [
+    gatePending,
+    handleOpenArtifact,
+    messages.length,
+    presentedArtifact,
+    session,
+    sessionArtifacts,
+  ]);
 
   // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
   // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render

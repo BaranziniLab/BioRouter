@@ -21,6 +21,21 @@ export type ArtifactSource =
       path: string;
       /** One-based source location, never part of the file-read IPC path. */
       line?: number;
+      /**
+       * The path's ONLY evidence is assistant prose — no successful tool call in
+       * this transcript wrote it. A model can put any plausible path in
+       * backticks, so such a path is a claim, not a receipt, and the panel
+       * existence-checks it before it becomes a card (`applyMentionedFileGate`
+       * in `BaseChat.tsx`).
+       *
+       * Absent means CONFIRMED, by one of two routes: a tool call wrote it, or
+       * the gate found it on disk. Both clear the flag, so a later read failure
+       * on an artifact still carrying it is a path that was never there — which
+       * is the difference between "moved, renamed, or deleted" and "the
+       * assistant mentioned this path but never created it". Never set to
+       * `false`; absence is the confirmed state.
+       */
+      mentionedOnly?: true;
     }
   | {
       kind: 'mcpResource';
