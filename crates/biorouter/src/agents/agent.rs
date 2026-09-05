@@ -3632,6 +3632,52 @@ where
 /// the request, and persist the elicitation prompt under its own session id
 /// (#40). A request scoped to another session neither wakes nor is drained
 /// by this loop.
+/// Which of two things happened while the tool-gating step was running.
+pub(crate) enum GateWake<T> {
+    /// Gating finished; this is its result.
+    Ready(T),
+    /// A user-action card was queued and is waiting to be surfaced.
+    ElicitationReady,
+}
+
+/// Race the tool-gating step against a card that needs a person.
+///
+/// ⚠ The THIRD wake site of this shape, and it was the missing one.
+/// [`next_provider_wake`] races the provider call and [`next_batch_wake`] races
+/// the batch, both because a tool parked inside them would otherwise hold its
+/// card until the thing it is parked in finishes — which it cannot, because the
+/// card is what unblocks it.
+///
+/// Gating looked like it could not park, and for an EXTENSION tool it cannot:
+/// `ExtensionManager::dispatch_tool_call` hands back a `ToolCallResult` whose
+/// `result` is a deferred future, so the tool's body runs later, inside the
+/// batch. But the agent loop dispatches the `platform__*` tools ITSELF, and
+/// those branches `.await` their handler and wrap the finished value
+/// (`ToolCallResult::from` is `future::ready`). Their whole body therefore runs
+/// **here**, in `handle_approved_and_denied_tools`'s sequential loop, before
+/// `combined` exists and before `next_batch_wake` is ever entered.
+///
+/// Measured: `platform__report_bug` parked its approval, the card was published
+/// to `ActionRequiredManager`, and `next_batch_wake` logged not one entry for
+/// the whole turn. The user saw a turn that stopped with no dialog, and the
+/// parked call would have sat out its full time-to-live unanswerable.
+///
+/// It is `install_extension`-shaped tools that are FINE, which is the opposite
+/// of the first guess: they are extension tools, so their bodies run in the
+/// batch where the drain is already raced.
+pub(crate) async fn next_gate_wake<T, F>(gate: &mut F, session_id: &str) -> GateWake<T>
+where
+    F: std::future::Future<Output = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = ActionRequiredManager::global().request_arrived(session_id) => {
+            GateWake::ElicitationReady
+        }
+        ready = gate => GateWake::Ready(ready),
+    }
+}
+
 pub(crate) async fn next_batch_wake<T, S>(
     cancel_token: &Option<CancellationToken>,
     combined: &mut S,
@@ -9667,19 +9713,52 @@ impl Agent {
                                         &request_to_response_map,
                                     ).await;
                                 } else {
+                                    // ⚠ Raced against a card that needs a person, and NOT
+                                    // merely awaited. The `platform__*` tools are dispatched
+                                    // by the agent loop rather than the extension manager, so
+                                    // their bodies run inside this call instead of later in
+                                    // the batch — and one that parks an approval here would
+                                    // hold its card until gating finishes, which it cannot,
+                                    // because the card is what unblocks it. See
+                                    // `next_gate_wake`.
+                                    //
+                                    // The braces are load-bearing: the pinned future holds a
+                                    // mutable borrow of `remaining_requests`, which the rest
+                                    // of this block reads, so it has to be dropped the moment
+                                    // gating returns.
                                     let (
                                         inspection_results,
                                         permission_check_result,
                                         catalog_mutation_request_ids,
                                         mut tool_futures,
-                                    ) = self.inspect_and_gate_tool_requests(
-                                        &mut remaining_requests,
-                                        &conversation,
-                                        biorouter_mode,
-                                        &session,
-                                        &request_to_response_map,
-                                        cancel_token.clone(),
-                                    ).await?;
+                                    ) = {
+                                        let gate = self.inspect_and_gate_tool_requests(
+                                            &mut remaining_requests,
+                                            &conversation,
+                                            biorouter_mode,
+                                            &session,
+                                            &request_to_response_map,
+                                            cancel_token.clone(),
+                                        );
+                                        futures::pin_mut!(gate);
+                                        loop {
+                                            match next_gate_wake(&mut gate, &session_config.id)
+                                                .await
+                                            {
+                                                GateWake::Ready(gated) => break gated?,
+                                                GateWake::ElicitationReady => {
+                                                    for msg in self
+                                                        .drain_elicitation_messages(
+                                                            &session_config.id,
+                                                        )
+                                                        .await
+                                                    {
+                                                        yield AgentEvent::Message(msg);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    };
                                     for request in &remaining_requests {
                                         if let Ok(tool_call) = &request.tool_call {
                                             request_to_executed_tool_call

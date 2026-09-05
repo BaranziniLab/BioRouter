@@ -155,6 +155,75 @@ is parked on the card, so `next_provider_wake` is what surfaces it (the #107 mec
 Both coding-agent providers are also `ProviderTier::Public`, so Gate A has already refused
 to bind one to a private chat and the private-session refusal cannot fire on that path.
 
+## Every model, one contract
+
+The tool is reached from every provider Biorouter supports — Anthropic, OpenAI,
+Versa, Bedrock, Ollama, llama.cpp, and a Claude Code or Codex child over the
+bridge — and the tool schema is the only contract between them. Two divergences
+are measured behaviours in this tree rather than hypotheses, and
+`normalize_arguments` undoes both:
+
+- **An envelope around the arguments.** `autovisualiser::normalize_dashboard_args`
+  exists because GPT-5.5 wraps a whole argument object in a `data` envelope and
+  retries identically after a rejection. `arguments`, `report`, `issue`, `bug`,
+  `data` and `params` are unwrapped — but only when the outer object names none
+  of the tool's own fields, so a real call carrying its own `data` keeps it.
+- **Stringified structure.** `de_flexible` / `de_stringified` exist for the same
+  reason. A wholly stringified argument object, a stringified envelope and a
+  stringified `steps` array are all parsed.
+
+`action` matching is case- and whitespace-insensitive and accepts the British
+spelling. That is not politeness: exact matching sent `"File"` to the analyze
+half, which answers *"now call me with `action: file`"* — so a model that
+capitalises loops forever, being told to do the thing it just tried. The safety
+direction is unchanged, because it is about the UNRECOGNISED case: absent,
+misspelled or nonsense still lands on the half that cannot publish, and
+`normalisation_never_turns_an_unrecognised_call_into_a_publish` pins that
+against every shape above.
+
+⚠ A tool that only works for the house style of whichever model it was written
+against is one that silently stops working when the user switches models — which
+they do, from the composer, mid-chat.
+
+## The card has to reach the user, and once did not
+
+⚠ Worth reading before adding any tool the agent loop dispatches itself.
+
+`platform__report_bug` parked its approval correctly, the card was published to
+`ActionRequiredManager`, and **no `actionRequired` frame ever reached the reply
+stream**. The turn stopped with no dialog and no explanation, and the parked call
+would have sat out its full 15-minute time-to-live unanswerable.
+
+The cause is structural, not a race. `handle_approved_and_denied_tools` awaits
+`dispatch_tool_call` in a sequential loop, and for an **extension** tool that is
+harmless: `ExtensionManager::dispatch_tool_call` returns a `ToolCallResult` whose
+`result` is a *deferred* future, so the tool's body runs later, inside the batch,
+where `next_batch_wake` already races the card drain. The `platform__*` tools are
+dispatched by the agent loop itself, and those branches `.await` their handler
+and wrap the finished value (`ToolCallResult::from` is `future::ready`). Their
+whole body therefore runs during gating — before `combined` exists and before
+`next_batch_wake` is ever entered, so nothing is draining cards.
+
+The fix is `next_gate_wake`, the third wake site of a shape the loop already had
+twice: `next_provider_wake` races the provider call, `next_batch_wake` races the
+batch, and gating was the one long await that could park and was not raced. It
+covers every agent-loop-dispatched tool, present and future.
+
+⚠ The first guess was that `install_extension` had the same problem and
+marketplace installs were unapprovable. It does not and they are not — it is an
+extension tool, so its body runs in the batch. The rule is about **who dispatches
+the tool**, not about which tool it is.
+
+`the_card_reaches_the_stream_while_the_tool_is_still_parked` is the regression
+test, and it is deliberately not "was the card yielded". An earlier test asked
+only that and passed throughout, because its denier polls the pending-action
+registry directly and answers the card whether or not it reached the stream; the
+tool then returns and the queued message is drained afterwards — late, but
+present. The regression test closes the loop through the stream itself: the
+reader signals when it *yields* a card, and only then is the card answered. On
+the broken code that signal never comes and the test times out, which is exactly
+what the user experiences.
+
 ## Reaching GitHub
 
 Nothing in this tree had ever authenticated to the GitHub API. Every existing call is

@@ -93,9 +93,22 @@ pub enum Action {
 impl Action {
     /// ⚠ Inference lands on `Analyze`, always. A model that omits the argument
     /// must not thereby publish something.
+    ///
+    /// Matching is case- and whitespace-insensitive, and accepts the British
+    /// spelling. That is not politeness: the previous exact match sent `"File"`
+    /// to the analyze half, which answers "now call me with `action: file`" —
+    /// so a model that capitalises loops forever, being told to do the thing it
+    /// just tried. The safety property is unchanged, because it is about the
+    /// UNRECOGNISED case: absent, misspelled or nonsense still lands on the
+    /// half that cannot publish.
     fn infer(arguments: &Value) -> Self {
-        match arguments.get("action").and_then(Value::as_str) {
+        let action = arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase());
+        match action.as_deref() {
             Some("file") => Self::File,
+            Some("analyze" | "analyse") => Self::Analyze,
             Some(_) => Self::Analyze,
             None => {
                 let has = |key: &str| {
@@ -112,6 +125,48 @@ impl Action {
             }
         }
     }
+}
+
+/// Undo the two shapes models reliably produce that a strict schema reader
+/// would reject.
+///
+/// ⚠ Both are measured behaviours in this tree, not defensive guessing.
+/// `autovisualiser::normalize_dashboard_args` exists for exactly the same two:
+/// GPT-5.5 wraps a whole argument object in a `data` envelope and retries
+/// identically after a rejection, and nested structures arrive stringified.
+/// This tool is reached from every provider Biorouter supports — Anthropic,
+/// OpenAI, Versa, Bedrock, Ollama, llama.cpp, and a Claude Code or Codex child
+/// over the bridge — so it normalises rather than assuming one house style.
+fn normalize_arguments(mut value: Value) -> Value {
+    // A JSON object that arrived as a string.
+    if let Value::String(raw) = &value {
+        if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+            value = parsed;
+        }
+    }
+    // An envelope around the real arguments.
+    if let Value::Object(map) = &value {
+        let names_a_field = ["action", "title", "description"]
+            .iter()
+            .any(|key| map.contains_key(*key));
+        if !names_a_field {
+            if let Some(inner) = ["arguments", "report", "issue", "bug", "data", "params"]
+                .iter()
+                .find_map(|key| map.get(*key))
+            {
+                let unwrapped = match inner {
+                    Value::String(raw) => {
+                        serde_json::from_str::<Value>(raw).unwrap_or_else(|_| inner.clone())
+                    }
+                    other => other.clone(),
+                };
+                if unwrapped.is_object() {
+                    return unwrapped;
+                }
+            }
+        }
+    }
+    value
 }
 
 fn invalid_params(message: impl std::fmt::Display) -> ErrorData {
@@ -133,7 +188,15 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
 /// `steps` may arrive as a list or as one newline-separated string; models
 /// produce both and neither is wrong.
 fn steps_arg(arguments: &Value) -> Vec<String> {
-    match arguments.get("steps") {
+    // A stringified array — the shape `de_stringified` exists for elsewhere in
+    // this tree. Parsed first, so it is treated as the list it is rather than
+    // split into lines of JSON punctuation.
+    let parsed = arguments
+        .get("steps")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(Value::is_array);
+    match parsed.as_ref().or_else(|| arguments.get("steps")) {
         Some(Value::Array(values)) => values
             .iter()
             .filter_map(Value::as_str)
@@ -388,6 +451,7 @@ pub async fn handle_report_bug(
     session_manager: Arc<SessionManager>,
     cancel: Option<CancellationToken>,
 ) -> ToolResult<Vec<Content>> {
+    let arguments = normalize_arguments(arguments);
     let home = dirs::home_dir();
     let home = home.as_deref();
     let conversation = conversation_for(session, session_manager.as_ref()).await?;
@@ -1172,7 +1236,12 @@ mod tests {
         assert_eq!(
             Action::infer(&args(serde_json::json!({"action": "Analyze"}))),
             Action::Analyze,
-            "matching is exact; anything unrecognised is safe"
+            "matching is case-insensitive, so this is the analyze half by name"
+        );
+        assert_eq!(
+            Action::infer(&args(serde_json::json!({"action": "analyse"}))),
+            Action::Analyze,
+            "the British spelling is the same request"
         );
     }
 
@@ -1202,6 +1271,101 @@ mod tests {
         );
     }
 
+    /// ⚠ The same call, in the shapes different model families actually emit.
+    ///
+    /// This tool is reached from every provider Biorouter supports — Anthropic,
+    /// OpenAI, Versa, Bedrock, Ollama, llama.cpp, and a Claude Code or Codex
+    /// child over the bridge — and the tool schema is the only contract between
+    /// them. Two divergences are measured behaviours in this tree rather than
+    /// hypotheses: `autovisualiser::normalize_dashboard_args` exists because
+    /// GPT-5.5 wraps a whole argument object in an envelope and retries
+    /// identically after a rejection, and `de_flexible`/`de_stringified` exist
+    /// because nested structures arrive stringified.
+    ///
+    /// Every row below must reach the SAME decision. A tool that only works for
+    /// the house style of whichever model it was written against is a tool that
+    /// silently stops working when the user switches models — which they do,
+    /// from the composer, mid-chat.
+    #[test]
+    fn every_model_family_s_argument_shape_reaches_the_same_decision() {
+        let report = serde_json::json!({
+            "action": "file",
+            "title": "Auto Visualiser renders a blank panel for a single-row dataset",
+            "description": "A chart of a one-row table produces an empty panel."
+        });
+        let shapes: Vec<(&str, Value)> = vec![
+            ("plain object", report.clone()),
+            (
+                "capitalised action",
+                serde_json::json!({ "action": "File", "title": "t", "description": "d" }),
+            ),
+            (
+                "padded action",
+                serde_json::json!({ "action": "  file  ", "title": "t", "description": "d" }),
+            ),
+            (
+                "`arguments` envelope",
+                serde_json::json!({ "arguments": report.clone() }),
+            ),
+            (
+                "`report` envelope",
+                serde_json::json!({ "report": report.clone() }),
+            ),
+            (
+                "`data` envelope",
+                serde_json::json!({ "data": report.clone() }),
+            ),
+            (
+                "stringified envelope",
+                serde_json::json!({ "arguments": report.to_string() }),
+            ),
+            ("wholly stringified", Value::String(report.to_string())),
+        ];
+        for (name, shape) in shapes {
+            assert_eq!(
+                Action::infer(&normalize_arguments(shape.clone())),
+                Action::File,
+                "`{name}` must file: a model's house style is not a different intention"
+            );
+        }
+    }
+
+    /// ⚠ And the safety direction survives all of it: anything unrecognised
+    /// still lands on the half that cannot publish.
+    #[test]
+    fn normalisation_never_turns_an_unrecognised_call_into_a_publish() {
+        for shape in [
+            serde_json::json!({}),
+            serde_json::json!({ "action": "publish" }),
+            serde_json::json!({ "action": "FILE_IT_NOW" }),
+            serde_json::json!({ "arguments": { "action": "analyse" } }),
+            serde_json::json!({ "data": { "title": "only a title" } }),
+            Value::String("not json at all".to_string()),
+            Value::Array(vec![]),
+        ] {
+            assert_eq!(
+                Action::infer(&normalize_arguments(shape.clone())),
+                Action::Analyze,
+                "{shape} must not publish"
+            );
+        }
+    }
+
+    /// An envelope is unwrapped only when the outer object is genuinely an
+    /// envelope — a real call carrying a `data` field of its own keeps it.
+    #[test]
+    fn a_real_call_is_not_mistaken_for_an_envelope() {
+        let call = serde_json::json!({
+            "action": "analyze",
+            "data": { "title": "not the real arguments" }
+        });
+        let normalised = normalize_arguments(call.clone());
+        assert_eq!(
+            normalised, call,
+            "an object that names its own fields is not an envelope"
+        );
+    }
+
     #[test]
     fn steps_are_accepted_as_a_list_or_as_prose() {
         assert_eq!(
@@ -1213,5 +1377,11 @@ mod tests {
             vec!["one", "two"]
         );
         assert!(steps_arg(&args(serde_json::json!({}))).is_empty());
+        // A stringified JSON array — parsed as the list it is, not split into
+        // lines of punctuation.
+        assert_eq!(
+            steps_arg(&args(serde_json::json!({"steps": "[\"one\", \"two\"]"}))),
+            vec!["one", "two"]
+        );
     }
 }

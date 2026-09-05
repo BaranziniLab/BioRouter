@@ -30,6 +30,7 @@ use biorouter::session::session_manager::{SessionManager, SessionType};
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, Tool};
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 
 /// Calls `platform__report_bug` on its first turn, then answers with text.
 ///
@@ -299,6 +300,22 @@ async fn the_platform_prefix_is_how_the_reporter_is_named_to_the_model() {
 #[tokio::test]
 #[serial_test::serial(user_proof_available)]
 async fn the_approval_card_is_yielded_out_of_the_reply_stream() {
+    card_is_yielded(None).await;
+}
+
+/// ⚠ The same thing, with a LIVE (uncancelled) `CancellationToken`.
+///
+/// `/reply` always passes one; the in-process test above passed `None`, and
+/// `next_batch_wake` is a `biased` select whose FIRST arm is that token. If the
+/// card only surfaces when the arm is `pending::<()>()` forever, every real
+/// chat turn is the failing configuration and only the test is the passing one.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn the_approval_card_is_yielded_even_with_a_live_cancel_token() {
+    card_is_yielded(Some(CancellationToken::new())).await;
+}
+
+async fn card_is_yielded(cancel_token: Option<CancellationToken>) {
     use biorouter::pending_user_action::{
         DecisionAuthority, PendingUserActions, UserActionOutcome,
     };
@@ -401,7 +418,7 @@ async fn the_approval_card_is_yielded_out_of_the_reply_stream() {
                 retry_config: None,
                 reasoning_effort: None,
             },
-            None,
+            cancel_token,
         )
         .await
         .unwrap();
@@ -442,4 +459,139 @@ async fn the_approval_card_is_yielded_out_of_the_reply_stream() {
     assert_eq!(tool_name, PLATFORM_REPORT_BUG_TOOL_NAME);
     assert!(body.contains("**Describe the bug**"), "{body}");
     assert!(body.contains("A chart of a one-row table"), "{body}");
+}
+
+/// ⚠ The card must arrive **while the tool is still parked**, not merely at some
+/// point in the turn.
+///
+/// `the_approval_card_is_yielded_out_of_the_reply_stream` above passed even when
+/// this was broken, and the reason is worth stating: its denier polls the
+/// `PendingUserActions` registry directly, so it answers the card whether or not
+/// the card ever reached the stream. The tool then returns, and the queued
+/// message is drained and yielded afterwards — late, but present. A test that
+/// only asks "was it yielded" cannot see the defect.
+///
+/// So this one closes the loop through the stream itself: the reader signals
+/// when it *yields* a card, and only then is the card answered. On the broken
+/// code that signal never comes, the tool sits on its 15-minute TTL, and the
+/// timeout below fails the test — which is exactly what a user experiences.
+///
+/// The defect: `handle_approved_and_denied_tools` awaits `dispatch_tool_call`
+/// sequentially, and the `platform__*` tools are dispatched by the agent loop
+/// itself, so their WHOLE BODY runs there — before `combined` exists and before
+/// `next_batch_wake`, the batch's card drain, is ever entered. Extension tools
+/// are unaffected: their `ToolCallResult.result` is a deferred future that runs
+/// inside the batch.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn the_card_reaches_the_stream_while_the_tool_is_still_parked() {
+    use biorouter::pending_user_action::{
+        DecisionAuthority, PendingUserActions, UserActionOutcome,
+    };
+    use biorouter::permission::Permission;
+
+    let _proof = ProofAvailable::set(true);
+    let dir = TempDir::new().unwrap();
+    let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+    let agent = Arc::new(Agent::with_config(AgentConfig::new(
+        session_manager,
+        permission_manager,
+        None,
+        BioRouterMode::Auto,
+    )));
+    let session = agent
+        .config
+        .session_manager
+        .create_session(
+            PathBuf::from("/workspace/demo"),
+            "card-while-parked".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    let session_id = session.id.clone();
+    agent
+        .update_provider(
+            Arc::new(ReportingProvider {
+                turns: AtomicUsize::new(0),
+                offered: Mutex::new(Vec::new()),
+                arguments: serde_json::json!({
+                    "action": "file",
+                    "title": "Auto Visualiser renders a blank panel for a single-row dataset",
+                    "description": "A chart of a one-row table produces an empty panel.",
+                    "steps": ["Open a chat", "Ask for a chart of one row"],
+                    "expected": "The chart renders with one bar."
+                }),
+            }) as Arc<dyn Provider>,
+            &session_id,
+        )
+        .await
+        .unwrap();
+
+    // The card is answered ONLY once the stream has yielded it.
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+    let denier = tokio::spawn({
+        let session_id = session_id.clone();
+        async move {
+            let Ok(id) = seen_rx.await else {
+                return false;
+            };
+            PendingUserActions::global().resolve_in_session(
+                &session_id,
+                &id,
+                UserActionOutcome::Denied {
+                    permission: Permission::DenyOnce,
+                },
+                DecisionAuthority::unproven(),
+            );
+            true
+        }
+    });
+
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("report a bug"),
+                SessionConfig {
+                    id: session_id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                Some(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        let mut seen_tx = Some(seen_tx);
+        while let Some(event) = stream.next().await {
+            let Ok(biorouter::agents::AgentEvent::Message(message)) = event else {
+                continue;
+            };
+            for content in &message.content {
+                if let MessageContent::ActionRequired(action) = content {
+                    if let ActionRequiredData::ToolConfirmation { id, .. } = &action.data {
+                        if let Some(tx) = seen_tx.take() {
+                            let _ = tx.send(id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        drained.is_ok(),
+        "the turn never finished: the approval card was not yielded while the tool was \
+         parked, so nothing could answer it and the parked call sat on its time-to-live. \
+         That is what a user sees as a chat that silently stops."
+    );
+    assert!(
+        denier.await.unwrap(),
+        "the card never reached the reply stream at all"
+    );
 }
