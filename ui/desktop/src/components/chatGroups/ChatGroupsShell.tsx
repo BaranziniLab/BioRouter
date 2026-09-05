@@ -909,6 +909,10 @@ function ChatGroupPane({
         .map((terminal) => (
           <InAppTerminalDock
             key={terminal.key}
+            // Also its scope for "Run this code block": a Run clicked in this
+            // tab's transcript must land in THIS terminal, not in whichever
+            // pane happens to hold focus.
+            dockKey={terminal.key}
             open={terminal.showing && terminal.key === tabKey}
             workingDir={terminal.workingDir}
             onClose={() => terminalDock.setOpen(terminal.key, false)}

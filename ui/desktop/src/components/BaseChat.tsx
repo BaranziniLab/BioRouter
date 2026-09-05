@@ -2507,6 +2507,7 @@ function BaseChatContent({
             panel stays global, spans all groups". */}
         {!terminalDock && (
           <InAppTerminalDock
+            dockKey={terminalDockKey}
             open={isTerminalDockOpen}
             workingDir={sessionWorkingDir}
             onClose={() => setIsTerminalDockOpen(false)}
