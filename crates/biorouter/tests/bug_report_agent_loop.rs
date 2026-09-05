@@ -22,7 +22,7 @@ use biorouter::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME;
 use biorouter::agents::{Agent, AgentConfig, SessionConfig};
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
-use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::errors::ProviderError;
@@ -281,4 +281,165 @@ async fn the_platform_prefix_is_how_the_reporter_is_named_to_the_model() {
     );
     // Not an extension: nothing in the manager advertises it.
     let _ = ExtensionConfig::default();
+}
+
+/// ⚠ Does the approval card actually reach the client?
+///
+/// The tool parks on a proof-backed approval, and every other assertion in this
+/// suite runs under `without_human_surface`, where `park` registers nothing and
+/// answers `Cancelled` at once. That proves the refusal path and says nothing
+/// about the path that matters: a card that is raised but never delivered
+/// leaves the user looking at a turn that has silently stopped, with no dialog
+/// and no way to answer it.
+///
+/// So this one raises a REAL card and asserts it is yielded out of
+/// `Agent::reply` as an `AgentEvent::Message` carrying `ActionRequired` — which
+/// is the frame the desktop renders and the SSE route forwards. It then denies
+/// it, so the turn ends instead of sitting out the 15-minute TTL.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn the_approval_card_is_yielded_out_of_the_reply_stream() {
+    use biorouter::pending_user_action::{
+        DecisionAuthority, PendingUserActions, UserActionOutcome,
+    };
+    use biorouter::permission::Permission;
+
+    let _proof = ProofAvailable::set(true);
+    let dir = TempDir::new().unwrap();
+    let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+    let agent = Arc::new(Agent::with_config(AgentConfig::new(
+        session_manager,
+        permission_manager,
+        None,
+        BioRouterMode::Auto,
+    )));
+    let session = agent
+        .config
+        .session_manager
+        .create_session(
+            PathBuf::from("/workspace/demo"),
+            "card-delivery".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    let session_id = session.id.clone();
+    agent
+        .update_provider(
+            Arc::new(ReportingProvider {
+                turns: AtomicUsize::new(0),
+                offered: Mutex::new(Vec::new()),
+                arguments: serde_json::json!({
+                    "action": "file",
+                    "title": "Auto Visualiser renders a blank panel for a single-row dataset",
+                    "description": "A chart of a one-row table produces an empty panel.",
+                    "steps": ["Open a chat", "Ask for a chart of one row"],
+                    "expected": "The chart renders with one bar."
+                }),
+            }) as Arc<dyn Provider>,
+            &session_id,
+        )
+        .await
+        .unwrap();
+
+    // Answer the card as soon as it is parked, so the turn terminates. DENY:
+    // nothing in this suite may create a real issue, and `issue::file_with_gh`
+    // refuses under `cfg!(test)` besides.
+    let denier = tokio::spawn({
+        let session_id = session_id.clone();
+        async move {
+            let registry = PendingUserActions::global();
+            for _ in 0..600 {
+                let ids: Vec<String> = registry
+                    .pending_cards_for_session(&session_id)
+                    .into_iter()
+                    .filter_map(|message| {
+                        message
+                            .content
+                            .into_iter()
+                            .find_map(|content| match content {
+                                MessageContent::ActionRequired(action) => match action.data {
+                                    ActionRequiredData::ToolConfirmation { id, .. } => Some(id),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                    })
+                    .collect();
+                if let Some(id) = ids.first() {
+                    registry.resolve_in_session(
+                        &session_id,
+                        id,
+                        UserActionOutcome::Denied {
+                            permission: Permission::DenyOnce,
+                        },
+                        // A DENIAL needs no proof: the gate keys on
+                        // `is_allowed()`, so a refusal lands from any surface.
+                        // Only an *allow* on a proof-backed approval is
+                        // restricted -- which is the property that stops this
+                        // suite ever creating a real issue.
+                        DecisionAuthority::unproven(),
+                    );
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            false
+        }
+    });
+
+    let mut stream = agent
+        .reply(
+            Message::user().with_text("report a bug"),
+            SessionConfig {
+                id: session_id.clone(),
+                schedule_id: None,
+                max_turns: Some(3),
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut card: Option<(String, String)> = None;
+    while let Some(event) = stream.next().await {
+        let Ok(biorouter::agents::AgentEvent::Message(message)) = event else {
+            continue;
+        };
+        for content in &message.content {
+            if let MessageContent::ActionRequired(action) = content {
+                if let ActionRequiredData::ToolConfirmation {
+                    tool_name,
+                    arguments,
+                    ..
+                } = &action.data
+                {
+                    card = Some((
+                        tool_name.clone(),
+                        arguments
+                            .get("body")
+                            .and_then(|body| body.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    drop(stream);
+    assert!(denier.await.unwrap(), "the card was never parked at all");
+
+    let (tool_name, body) = card.expect(
+        "the approval card must be YIELDED from the reply stream. Without it the desktop \
+         renders no dialog, the turn stops with no explanation, and the parked call sits \
+         out its whole time-to-live unanswerable.",
+    );
+    assert_eq!(tool_name, PLATFORM_REPORT_BUG_TOOL_NAME);
+    assert!(body.contains("**Describe the bug**"), "{body}");
+    assert!(body.contains("A chart of a one-row table"), "{body}");
 }

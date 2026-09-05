@@ -4807,6 +4807,19 @@ impl Agent {
             }
             messages.push(elicitation_message);
         }
+        // A card that is raised but never delivered leaves the user looking at a
+        // turn that has silently stopped: no dialog, no explanation, and a
+        // parked call sitting out its whole time-to-live unanswerable. That
+        // failure is invisible from both ends — the tool is waiting correctly
+        // and the client is reading correctly — so the one place that can say
+        // whether a card was handed to the stream says it.
+        if !messages.is_empty() {
+            debug!(
+                session_id,
+                cards = messages.len(),
+                "surfacing user-action cards into the reply stream"
+            );
+        }
         messages
     }
 
