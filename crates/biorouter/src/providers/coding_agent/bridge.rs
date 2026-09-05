@@ -2379,7 +2379,7 @@ mod tests {
         let hooks = no_hooks();
         let mut inspections = inspections_with(&hooks, false);
         inspections.add_inspector(Box::new(
-            crate::security::sensitive_ops::SensitiveOpsInspector,
+            crate::security::sensitive_ops::SensitiveOpsInspector::unbound(),
         ));
         let grant = BridgeGrant::new(
             Session::default(),

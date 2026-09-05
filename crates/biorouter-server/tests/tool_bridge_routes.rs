@@ -477,7 +477,7 @@ async fn real_developer_grant_in(
     let mut inspections = ToolInspectionManager::new();
     inspections.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
     inspections.add_inspector(Box::new(SecurityInspector::new()));
-    inspections.add_inspector(Box::new(SensitiveOpsInspector));
+    inspections.add_inspector(Box::new(SensitiveOpsInspector::unbound()));
     inspections.add_inspector(Box::new(PermissionInspector::new(
         risks,
         PermissionManager::instance(),
