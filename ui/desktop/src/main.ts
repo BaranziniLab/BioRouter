@@ -1354,18 +1354,37 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    // DERIVED, not chosen: 240px sidebar (`SIDEBAR_WIDTH`, 15rem, in
-    // components/ui/sidebar.tsx) + the 760px reading column (`--measure-chat`
-    // in styles/main.css) = 1000. `useContentSize` is on, so this is content
-    // width, which is the number the renderer sees.
+    // DERIVED, not chosen: the 216px sidebar MINIMUM (`SIDEBAR_MIN_WIDTH` in
+    // components/ui/sidebarWidth.ts) + the 760px reading column
+    // (`--measure-chat` in styles/main.css) = 976. `useContentSize` is on, so
+    // this is content width, which is the number the renderer sees.
+    //
+    // ⚠ The sidebar's MINIMUM, not its default. The sidebar is user-resizable
+    // (216–360px, default 288), and a floor derived from the default would be a
+    // floor the user can push the window under from the other side — widen the
+    // sidebar and the reading column is squeezed at a window width this number
+    // called roomy. The minimum is the only width that is a property of the app
+    // rather than of a preference. The wide end is covered elsewhere and by
+    // construction: 360 + 760 = 1120 = SIDEBAR_COMPACT_WIDTH, so at every window
+    // width that still gives the sidebar a column, even a fully widened one
+    // leaves the measure whole — and below 1120 rung 1 of the yield ladder has
+    // already collapsed the sidebar to an overlay, where it costs the chat
+    // nothing.
     //
     // Below it the Home column is narrower than its own measure, and the usage
     // heatmap — the one thing on Home whose size is computed rather than
     // declared — starts shrinking its cells. Measured in a browser against the
-    // real stylesheet: at 990px content width the grid is still at its full
-    // 23px cells; at 980px it drops to 22px and keeps stepping down to 16px by
-    // 800px. The exact cliff is 989px; 1000 is the same number expressed in the
-    // tokens it comes from, so it survives the heatmap's cell ladder changing.
+    // real stylesheet, WITH THE THEN-240px SIDEBAR: at 990px content width the
+    // grid is still at its full 23px cells; at 980px it drops to 22px and keeps
+    // stepping down to 16px by 800px, with the exact cliff at 989px.
+    //
+    // ⚠ That 989 is a WINDOW width and therefore carries the sidebar of the day
+    // inside it — what the heatmap actually reacts to is its own column, i.e.
+    // window minus sidebar, so the cliff moves with the sidebar. The measured
+    // cliff is a 749px column (989 − 240); against the 216px minimum the same
+    // cliff is a 965px window, and 976 clears it by the same 11px the old 1000
+    // cleared 989 by. The floor is still the tokens rather than the measurement,
+    // so it survives the heatmap's cell ladder changing.
     // `styles/measures.test.ts` asserts the arithmetic still holds.
     //
     // ⚠ This is a *minimum window size*, not a content `max-width` — it is not
@@ -1379,7 +1398,7 @@ const createChat = async (
     // the menu bar and Dock are taken out. The heatmap keeps its chrome locked
     // to its grid instead (see UsageHeatmap's `heatStyle`), so a squeezed grid
     // stays a coherent block rather than desyncing from its own labels.
-    minWidth: 1000,
+    minWidth: 976,
     minHeight: 600,
     resizable: true,
     useContentSize: true,

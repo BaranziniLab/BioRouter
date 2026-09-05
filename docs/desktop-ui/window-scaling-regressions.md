@@ -79,20 +79,46 @@ anywhere in a layout container reintroduces this bug with nothing to stop it.
 
 ### Not this: the window's own minimum size
 
-`main.ts` sets `minWidth: 1000` on the main window, and it is easy to read that
+`main.ts` sets `minWidth: 976` on the main window, and it is easy to read that
 as the same mistake. It is the opposite kind of number: a **floor under a narrow
 window**, which does nothing at all to a wide one. The measures above still
 govern how the content uses the room.
 
-It is derived rather than chosen — 240px sidebar (`SIDEBAR_WIDTH`, 15rem) plus
-the 760px reading column (`--measure-chat`) — because Home's usage heatmap is the
-one element whose size is *computed* rather than declared: it fits its cells to
-the box it is given, so a window narrow enough to squeeze the reading column
-squeezes the grid with it. Measured against the real stylesheet, the cliff is at
-989px of content width (23px cells at 989, 22px at 988, stepping down to 16px by
-800px). `styles/measures.test.ts` asserts the arithmetic, so changing either the
-sidebar width or the chat measure fails there instead of quietly letting the
+It is derived rather than chosen — the **216px sidebar minimum**
+(`SIDEBAR_MIN_WIDTH` in `components/ui/sidebarWidth.ts`) plus the 760px reading
+column (`--measure-chat`) — because Home's usage heatmap is the one element whose
+size is *computed* rather than declared: it fits its cells to the box it is
+given, so a window narrow enough to squeeze the reading column squeezes the grid
+with it. `styles/measures.test.ts` asserts the arithmetic, so changing either the
+sidebar's bounds or the chat measure fails there instead of quietly letting the
 window compress the heatmap again.
+
+⚠ **The sidebar's MINIMUM, not its width** — the sidebar is user-resizable
+(216–360px, default 288), and this line read *"240px sidebar (`SIDEBAR_WIDTH`,
+15rem)"* while that was still a single number. The moment a measure has a range,
+a floor derived from anywhere but the bottom of it is a floor the user can push
+the window under from the other side: widen the sidebar and the reading column is
+squeezed at a window width the floor called roomy. The minimum is the only width
+in the range that is a property of the app rather than of a preference.
+
+The wide end is closed by construction rather than by this number:
+`SIDEBAR_MAX_WIDTH + 760 = 1120 = SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield
+ladder — so at every window width that still gives the sidebar a column of its
+own, even a fully widened one leaves the measure whole, and below 1120 rung 1 has
+already collapsed the sidebar to an overlay where it costs the chat nothing.
+`measures.test.ts` pins that identity too, because it is the only thing standing
+between a wider sidebar and a squeezed column.
+
+Measured against the real stylesheet **with the then-240px sidebar**, the cliff
+was at 989px of content width (23px cells at 989, 22px at 988, stepping down to
+16px by 800px). ⚠ That 989 is a *window* width and therefore carries the sidebar
+of the day inside it: what the heatmap reacts to is its own column, so the cliff
+moves with the sidebar. The measurement is really a **749px column**
+(989 − 240), and against the 216px minimum the same cliff sits at a **965px**
+window — which 976 clears by the same 11px the old 1000 cleared 989 by. Both
+ends were re-measured in a real browser when the sidebar
+became resizable: at 976 × 216 the content pane is exactly 760px, and at
+1120 × 360 it is exactly 760px.
 
 The height axis is deliberately **not** capped to the same standard. A short
 window shrinks the heatmap's cells too, but the `minHeight` that would prevent it

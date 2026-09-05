@@ -2903,6 +2903,55 @@
   box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
+/* The sidebar's drag edge (components/ui/sidebar.tsx `SidebarResizeHandle`).
+   ⚠ AUTHORED CSS, NOT A TAILWIND UTILITY STRING, for the same reason as
+   `.biorouter-composer-card` below: the hover hairline and the resize cursor are
+   the control's ONLY affordance, and a newly written utility can fail to reach
+   the stylesheet when the renderer's watcher is off — leaving an invisible,
+   apparently-dead edge that reads as a missing feature rather than a build one.
+   The 8px target sits wholly INSIDE the sidebar: `<main>` is z-60 against the
+   container's z-10, so anything hanging past the edge would be un-clickable. */
+.biorouter-sidebar-resize-handle {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  /* Without this a touch drag scrolls the sidebar instead of moving the edge. */
+  touch-action: none;
+}
+
+.biorouter-sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 2px;
+  background: transparent;
+  transition: background-color var(--motion-fast) var(--ease-out);
+}
+
+.biorouter-sidebar-resize-handle:hover::after,
+.biorouter-sidebar-resize-handle:focus-visible::after,
+.biorouter-sidebar-resize-handle[data-resizing]::after {
+  background: var(--border-strong);
+}
+
+/* The hairline above IS the focus indication — a ring on an 8px sliver flush
+   against the window edge would be clipped rather than seen. */
+.biorouter-sidebar-resize-handle:focus-visible {
+  outline: none;
+}
+
+/* A collapsed sidebar has no edge to drag: offcanvas has translated it out of
+   the window, and the icon rail is a fixed width by definition. */
+[data-slot='sidebar'][data-state='collapsed'] .biorouter-sidebar-resize-handle {
+  display: none;
+}
+
 @media (min-width: 768px) {
   .biorouter-sidebar-inset-depth {
     box-shadow: none;
@@ -3061,7 +3110,14 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
 body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
 body.biorouter-window-resizing .biorouter-sidebar-shell,
 body.biorouter-window-resizing [data-slot='sidebar-gap'],
-body.biorouter-window-resizing [data-testid='artifact-viewer'] {
+body.biorouter-window-resizing [data-testid='artifact-viewer'],
+/* Dragging the sidebar's own edge needs the same treatment, and for a sharper
+   reason: `sidebar-gap` carries `transition-[width]` at --motion-slow, so
+   without this the column the sidebar occupies eases toward each frame's width
+   and the edge visibly trails the pointer by a third of a second. */
+body.biorouter-sidebar-resizing .biorouter-sidebar-inset-depth,
+body.biorouter-sidebar-resizing .biorouter-sidebar-shell,
+body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   /* Resize-driven geometry should track the pointer instead of lagging behind it. */
   transition-duration: 0ms !important;
 }

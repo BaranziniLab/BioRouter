@@ -330,17 +330,24 @@ which in `LintDrawer` costs **8px of real overlap** with *Check again*.
 
 ### R-08 — The pane responds, not the window
 
-**Measured, and this is the sharpest finding in the document.** `main.ts:1166` sets
-`minWidth: 1000, minHeight: 600` with `useContentSize: true`, and the comment above it derives that
-1000 as **240px of sidebar plus the 760px reading column**. The sidebar is `SIDEBAR_WIDTH = 15rem`
-(240px) expanded, icon + spacing (54px) collapsed.
+**Measured, and this is the sharpest finding in the document.** `main.ts` sets
+`minWidth, minHeight: 600` with `useContentSize: true`, and the comment above it derives the width
+as **the sidebar minimum plus the 760px reading column**.
+
+⚠ **The sidebar is user-resizable now**, 216–360px with a 288px default
+(`components/ui/sidebarWidth.ts`), so the numbers below moved: the window floor is **976**, derived
+from the 216px *minimum*. This section read "1000 … 240px of sidebar … `SIDEBAR_WIDTH = 15rem`"
+while the sidebar was a single fixed width. **The finding is unchanged and the table's key row is
+numerically identical** — at the app minimum the pane is still exactly 760px, because the floor and
+the sidebar moved together by construction. Rows carrying a sidebar width are re-stated at the
+default; a user who has dragged the sidebar shifts them by up to ±72px.
 
 | Case | Window (content) | Sidebar | **Knowledge pane** | Viewport `md:` ≥ 930? |
 | --- | --- | --- | --- | --- |
-| **App minimum, sidebar open** | 1000 × 600 | 240 | **760 × 568** | **fires** |
-| App minimum, sidebar collapsed | 1000 × 600 | 54 | 946 × 568 | fires |
-| Default window, sidebar open | 1000 × 1000 | 240 | 760 × 968 | fires |
-| 1280 window, sidebar open | 1280 × 800 | 240 | 1040 × 768 | fires |
+| **App minimum, sidebar open at its own minimum** | 976 × 600 | 216 | **760 × 568** | **fires** |
+| App minimum, sidebar collapsed | 976 × 600 | 54 | 922 × 568 | fires |
+| Default window, sidebar open | 1000 × 1000 | 288 | 712 × 968 | fires |
+| 1280 window, sidebar open | 1280 × 800 | 288 | 992 × 768 | fires |
 | 1680 window, sidebar collapsed | 1680 × 1050 | 54 | 1626 × 1018 | fires |
 
 **The section's one breakpoint is a *viewport* media query.** `md:` (930px, `main.css:14`) tests the

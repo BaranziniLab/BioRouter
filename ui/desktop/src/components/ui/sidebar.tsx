@@ -13,13 +13,31 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from './skeleton';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './Tooltip';
 import { useIsMobile } from '../../hooks/use-mobile';
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_WIDTH_KEYBOARD_STEP,
+  clampSidebarWidth,
+  readStoredSidebarWidth,
+  writeStoredSidebarWidth,
+} from './sidebarWidth';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = '15rem';
-const SIDEBAR_WIDTH_MOBILE = SIDEBAR_WIDTH;
+/**
+ * The mobile drawer stays at the canonical default and is NOT resizable.
+ *
+ * It is a sheet over a narrow window, not a column beside the content: there is
+ * no edge to drag (the drag handle is desktop-only), and following a width the
+ * user chose on a wide window would size an overlay by a decision made about a
+ * layout that is not on screen. `sidebar.test.tsx` pins this deliberately.
+ */
+const SIDEBAR_WIDTH_MOBILE = `${SIDEBAR_DEFAULT_WIDTH}px`;
 const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
+/** Marks the drag on `<body>` so the width transitions stop lagging the pointer. */
+const SIDEBAR_RESIZING_CLASS = 'biorouter-sidebar-resizing';
 
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed';
@@ -29,6 +47,16 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
   toggleSidebar: () => void;
+  /** The current sidebar width in px, already clamped to the module's bounds. */
+  width: number;
+  /** True for the duration of a pointer drag on the resize handle. */
+  isResizing: boolean;
+  /** Begin a pointer drag. Wired to the handle's `onPointerDown`. */
+  startResize: (event: React.PointerEvent<HTMLElement>) => void;
+  /** Move the edge by a signed number of px, clamped and persisted. */
+  nudgeWidth: (delta: number) => void;
+  /** Restore the default width (the handle's double-click). */
+  resetWidth: () => void;
 };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
@@ -99,6 +127,152 @@ function SidebarProvider({
   // This makes it easier to style the sidebar with Tailwind classes.
   const state = open ? 'expanded' : 'collapsed';
 
+  // ---------------------------------------------------------------------------
+  // Width
+  //
+  // Modelled on `useArtifactPanel`'s splitter rather than invented a second time:
+  // pointer capture with global listeners as the fallback, one rAF-batched write
+  // per frame, and a single `finishResize` that every exit path funnels through
+  // (pointerup, pointercancel, lost capture, window blur, unmount). That last
+  // part is the whole reason the panel's version is shaped this way — a drag
+  // that ends off-window otherwise leaves `col-resize` painted on the body and
+  // a live pointermove listener behind it.
+  //
+  // The arithmetic itself is NOT here. It lives in `./sidebarWidth`, pure, so
+  // the bounds are provable without rendering — jsdom computes no layout, so a
+  // test that mounts this component can never see how wide the sidebar actually
+  // got.
+  // ---------------------------------------------------------------------------
+  const [width, setWidth] = React.useState<number>(() => readStoredSidebarWidth());
+  const [isResizing, setIsResizing] = React.useState(false);
+  const resizeFrameRef = React.useRef<number | null>(null);
+  const pendingWidthRef = React.useRef<number | null>(null);
+  const resizeCleanupRef = React.useRef<(() => void) | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeCleanupRef.current?.();
+    };
+  }, []);
+
+  const nudgeWidth = React.useCallback((delta: number) => {
+    setWidth((current) => {
+      const next = clampSidebarWidth(current + delta);
+      writeStoredSidebarWidth(next);
+      return next;
+    });
+  }, []);
+
+  const resetWidth = React.useCallback(() => {
+    setWidth(SIDEBAR_DEFAULT_WIDTH);
+    writeStoredSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+  }, []);
+
+  const startResize = React.useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // A second pointer landing mid-drag must not run two loops over one width.
+      resizeCleanupRef.current?.();
+
+      const startX = event.clientX;
+      const startWidth = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      const handle = event.currentTarget;
+      const pointerId = event.pointerId;
+      let finished = false;
+      let latestWidth = startWidth;
+
+      try {
+        handle.setPointerCapture(pointerId);
+      } catch {
+        // Capture is unavailable (jsdom, some pen devices). The window-level
+        // listeners below keep the drag working without it.
+      }
+
+      setIsResizing(true);
+      pendingWidthRef.current = null;
+      document.body.classList.add(SIDEBAR_RESIZING_CLASS);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const applyPendingWidth = () => {
+        resizeFrameRef.current = null;
+        const nextWidth = pendingWidthRef.current;
+        pendingWidthRef.current = null;
+        if (nextWidth !== null) setWidth(nextWidth);
+      };
+
+      const scheduleWidth = (nextWidth: number) => {
+        latestWidth = nextWidth;
+        pendingWidthRef.current = nextWidth;
+        if (resizeFrameRef.current !== null) return;
+        resizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
+      };
+
+      const handleMove = (moveEvent: globalThis.PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        // The sidebar is on the LEFT, so rightward pointer movement widens it —
+        // the opposite sign from the artifact panel's right-hand splitter.
+        scheduleWidth(clampSidebarWidth(startWidth + (moveEvent.clientX - startX)));
+      };
+
+      const finishResize = (commitPendingWidth: boolean) => {
+        if (finished) return;
+        finished = true;
+        if (resizeFrameRef.current !== null) {
+          window.cancelAnimationFrame(resizeFrameRef.current);
+          resizeFrameRef.current = null;
+        }
+        if (commitPendingWidth) {
+          if (pendingWidthRef.current !== null) setWidth(pendingWidthRef.current);
+          // Persisted once, at the end. A write per frame would put a synchronous
+          // localStorage round-trip inside the drag loop.
+          writeStoredSidebarWidth(latestWidth);
+        }
+        pendingWidthRef.current = null;
+        setIsResizing(false);
+        document.body.classList.remove(SIDEBAR_RESIZING_CLASS);
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener('pointermove', handleMove);
+        window.removeEventListener('pointerup', handleEnd);
+        window.removeEventListener('pointercancel', handleEnd);
+        window.removeEventListener('blur', handleWindowBlur);
+        handle.removeEventListener('lostpointercapture', handleLostPointerCapture);
+        try {
+          if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+        } catch {
+          // The handle may have left the document while the pointer was outside.
+        }
+        resizeCleanupRef.current = null;
+      };
+
+      const handleEnd = (endEvent: globalThis.PointerEvent) => {
+        if (endEvent.pointerId !== pointerId) return;
+        finishResize(true);
+      };
+      const handleWindowBlur = () => finishResize(true);
+      const handleLostPointerCapture = (lostEvent: globalThis.PointerEvent) => {
+        if (lostEvent.pointerId === pointerId) finishResize(true);
+      };
+
+      // Unmount mid-drag: drop the listeners and the body styles, but do NOT
+      // persist — the width the user was mid-way through choosing is not one.
+      resizeCleanupRef.current = () => finishResize(false);
+
+      window.addEventListener('pointermove', handleMove);
+      window.addEventListener('pointerup', handleEnd);
+      window.addEventListener('pointercancel', handleEnd);
+      window.addEventListener('blur', handleWindowBlur);
+      handle.addEventListener('lostpointercapture', handleLostPointerCapture);
+    },
+    [width]
+  );
+
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
       state,
@@ -108,8 +282,26 @@ function SidebarProvider({
       openMobile,
       setOpenMobile,
       toggleSidebar,
+      width,
+      isResizing,
+      startResize,
+      nudgeWidth,
+      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+    [
+      state,
+      open,
+      setOpen,
+      isMobile,
+      openMobile,
+      setOpenMobile,
+      toggleSidebar,
+      width,
+      isResizing,
+      startResize,
+      nudgeWidth,
+      resetWidth,
+    ]
   );
 
   return (
@@ -119,7 +311,7 @@ function SidebarProvider({
           data-slot="sidebar-wrapper"
           style={
             {
-              '--sidebar-width': SIDEBAR_WIDTH,
+              '--sidebar-width': `${width}px`,
               '--sidebar-width-icon': SIDEBAR_WIDTH_ICON,
               ...style,
             } as React.CSSProperties
@@ -234,8 +426,73 @@ function Sidebar({
         >
           {children}
         </div>
+        <SidebarResizeHandle />
       </div>
     </div>
+  );
+}
+
+/**
+ * The sidebar's drag edge.
+ *
+ * WHY IT SITS INSIDE THE SIDEBAR'S OWN BOX. `sidebar-container` is `z-10` and
+ * `SidebarInset`'s `<main>` is `z-[60]`, so any part of this handle that hung
+ * past the sidebar's right edge would be painted under the content pane and
+ * silently un-grabbable — a control that looks present and does nothing. The
+ * 8px target therefore sits wholly within the sidebar, flush to the edge.
+ *
+ * WHY THE STYLING IS AUTHORED CSS. The hover hairline and `cursor: col-resize`
+ * are the only affordance the control has, and a Tailwind utility can silently
+ * fail to generate when the renderer's watcher is off (the composer's focus edge
+ * hit exactly this — see `styles/composerFocus.test.ts`). An invisible edge with
+ * a default cursor is indistinguishable from a missing feature, so the rule is
+ * written out in `main.css`, which also hides the handle while the sidebar is
+ * collapsed.
+ *
+ * It is a focusable `role="separator"` — the ARIA window-splitter pattern — so
+ * the width is reachable without a pointer, and reports its bounds so a screen
+ * reader can say where the edge currently is.
+ */
+function SidebarResizeHandle() {
+  const { width, isResizing, startResize, nudgeWidth, resetWidth } = useSidebar();
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      nudgeWidth(-SIDEBAR_WIDTH_KEYBOARD_STEP);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      nudgeWidth(SIDEBAR_WIDTH_KEYBOARD_STEP);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      nudgeWidth(SIDEBAR_MIN_WIDTH - width);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      nudgeWidth(SIDEBAR_MAX_WIDTH - width);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      resetWidth();
+    }
+  };
+
+  return (
+    <div
+      data-slot="sidebar-resize-handle"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      aria-valuenow={width}
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={SIDEBAR_MAX_WIDTH}
+      aria-valuetext={`${width} pixels`}
+      data-resizing={isResizing ? 'true' : undefined}
+      tabIndex={0}
+      title="Drag to resize · double-click to reset"
+      onPointerDown={startResize}
+      onDoubleClick={resetWidth}
+      onKeyDown={handleKeyDown}
+      className="biorouter-sidebar-resize-handle"
+    />
   );
 }
 
