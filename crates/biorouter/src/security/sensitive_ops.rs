@@ -47,7 +47,7 @@
 //!      populated tree is a different risk class from writing one file:
 //!      `~/Desktop/kdps-build` classifies as [`Blast::Ordinary`], and a real
 //!      Auto-mode agent destroyed an unpushed git repository there with no
-//!      prompt of any kind. See [`established_directory_reason`] for what makes
+//!      prompt of any kind. See [`established_directory_probe`] for what makes
 //!      a directory "established", and note what is deliberately NOT escalated:
 //!      an empty directory, a plain file, a symlink, a temp tree, a regenerable
 //!      build/dependency/cache directory ([`REGENERABLE_DIR_NAMES`]), a tree
@@ -55,6 +55,24 @@
 //!      on record as having created. A prompt on every `rm -rf node_modules`
 //!      would get Auto mode switched off, which is a worse outcome than the
 //!      hole.
+//!
+//!      **Provenance is corroborated, never taken on the model's word.** The
+//!      "this session created it" exemption is the one input an *attacker in
+//!      the loop* writes, so it is only consulted for a call that actually ran
+//!      and succeeded (the paired `ToolResponse`, which the agent writes, not
+//!      the request, which the model writes) *and* only where the filesystem
+//!      does not contradict it — a directory holding content older than the
+//!      session was not created by it. Both halves close a real hole: a
+//!      **denied** `mkdir` sat in the request stream and vouched for the delete
+//!      that followed, and `mkdir -p X` on an existing `X` succeeds while
+//!      creating nothing, so a model whose `rm -rf X` had just been refused
+//!      could manufacture its own permission and retry on the next turn.
+//!
+//!      A **glob** delete (`rm -rf *`, `rm -rf kdps-*`) is graded on its
+//!      containing directory, because the shell expands the pattern and the
+//!      paths destroyed are never in the command text. It destroys strictly
+//!      more than the named target beside it, so it fails **closed** rather
+//!      than falling silently outside the criterion.
 //!
 //! Reads are intentionally out of scope here: secret-file reads are already
 //! denied by `SecretGuard`. Only mutations escalate, so that ordinary Auto-mode
@@ -110,6 +128,12 @@
 //!     (`code_execution_extension::run_tool_handler`) against the same
 //!     sensitivity check — with a deny, since that layer cannot surface an
 //!     interactive ask — is the recommended deeper follow-up.
+//!   * Criterion 5's glob handling keys off [`TargetPath::fixed_prefix`], which
+//!     `normalize_for` sets for `*` and `?` only. A bracket expression
+//!     (`rm -rf kdps-[0-9]`) or a brace expansion (`rm -rf {a,b}`) therefore
+//!     resolves to one literal path that does not exist, and is not escalated.
+//!     Teaching the normalizer those two metacharacter classes is the fix, and
+//!     it belongs in `policy::target` beside the ones already there.
 //!   * Criterion 5 reads the delete verb's own operands, so a deletion whose
 //!     targets arrive from somewhere else — `find … -exec rm -rf {} \;`,
 //!     `… | xargs rm -rf` — has no target to classify and is not escalated.
@@ -445,13 +469,43 @@ impl<'a> CallSession<'a> {
     }
 
     /// Normalized paths of every directory an **earlier** tool call in this
-    /// conversation asked to bring into existence.
+    /// conversation asked to bring into existence *and actually did*.
     fn created_dirs(&self, env: &EnvFacts) -> &HashSet<String> {
         self.created_dirs
             .get_or_init(|| self.scan_created_dirs(env))
     }
 
+    /// The ids of the tool calls this conversation records as having actually
+    /// **run and succeeded**.
+    ///
+    /// A `ToolRequest` is text the *model* wrote; the paired `ToolResponse` is
+    /// written by the agent once the call returned. Provenance therefore reads
+    /// the response, so a creation that was denied at the approval prompt,
+    /// cancelled, or that failed outright vouches for nothing — otherwise a
+    /// refused `mkdir` still unlocks the delete that follows it, which is the
+    /// same "a denied operation becomes its own permission" shape criterion 5
+    /// exists to close.
+    ///
+    /// A tool fails two ways, the convention used across this crate (see
+    /// `tool_monitor::failure_text`): a transport/protocol `Err`, or an `Ok`
+    /// flagged `is_error`.
+    fn executed_request_ids(&self) -> HashSet<&'a str> {
+        let mut out = HashSet::new();
+        for message in self.messages {
+            for content in &message.content {
+                let MessageContent::ToolResponse(response) = content else {
+                    continue;
+                };
+                if matches!(&response.tool_result, Ok(result) if result.is_error != Some(true)) {
+                    out.insert(response.id.as_str());
+                }
+            }
+        }
+        out
+    }
+
     fn scan_created_dirs(&self, env: &EnvFacts) -> HashSet<String> {
+        let executed = self.executed_request_ids();
         let mut out = HashSet::new();
         for message in self.messages {
             for content in &message.content {
@@ -462,6 +516,10 @@ impl<'a> CallSession<'a> {
                 // exact shape of the incident this criterion exists for, so the
                 // batch under inspection is never its own provenance.
                 if self.current_request_ids.contains(&request.id) {
+                    continue;
+                }
+                // …and a call that never ran vouches for nothing either.
+                if !executed.contains(request.id.as_str()) {
                     continue;
                 }
                 let Ok(call) = &request.tool_call else {
@@ -894,17 +952,51 @@ fn predates_session(meta: &std::fs::Metadata, session_start: SystemTime) -> bool
 /// directory that already existed, is not empty, and is not this session's own
 /// work.
 ///
-/// The order of the tests is the order of their cost — a string compare, then
-/// one `stat`, then a bounded walk, and only then the conversation scan.
+/// A **glob** target (`rm -rf *`, `rm -rf kdps-*`) is graded on its containing
+/// directory instead. The shell expands the pattern before `rm` runs, so the
+/// paths that would be destroyed are not in the command text and cannot be
+/// probed one by one — and a pattern destroys strictly *more* than the single
+/// path beside it, so it must not be the one shape that walks through. It fails
+/// **closed**: the container is graded on exactly the evidence and exemptions a
+/// named target gets, so `rm -rf node_modules/*` and a delete inside a temp tree
+/// stay silent while `rm -rf *` in a repository asks.
 fn established_directory_reason(
     target: &TargetPath,
     session: &CallSession<'_>,
     env: &EnvFacts,
 ) -> Option<String> {
-    if is_temp_path(&target.norm) {
+    if let Some(prefix) = target.fixed_prefix.as_deref() {
+        let probe = established_directory_probe(prefix, session, env)?;
+        return Some(format!(
+            "recursively deletes everything matching {} inside {prefix} — an established \
+             directory this session did not create ({})",
+            target.norm,
+            probe.describe()
+        ));
+    }
+    let probe = established_directory_probe(&target.norm, session, env)?;
+    Some(format!(
+        "recursively deletes {} — an existing directory this session did not create ({})",
+        target.norm,
+        probe.describe()
+    ))
+}
+
+/// Is the directory at `norm` *established* — already there, holding something,
+/// and not this session's own work? `Some(probe)` when a recursive delete of it
+/// has to be approved.
+///
+/// The order of the tests is the order of their cost — a string compare, then
+/// one `stat`, then a bounded walk, and only then the conversation scan.
+fn established_directory_probe(
+    norm: &str,
+    session: &CallSession<'_>,
+    env: &EnvFacts,
+) -> Option<DirectoryProbe> {
+    if is_temp_path(norm) {
         return None;
     }
-    let path = Path::new(target.norm.as_str());
+    let path = Path::new(norm);
     // A repository is never build output, whatever it is called, so the name
     // exemption yields to a `.git`.
     let has_git = holds_git_repository(path);
@@ -917,15 +1009,19 @@ fn established_directory_reason(
     if !has_git && !probe.holds_pre_session_content {
         return None;
     }
-    if session.created_dirs(env).contains(&target.norm) {
+    // Provenance is the one input a *model* authors, so it may only excuse what
+    // the filesystem does not contradict: a directory holding content older than
+    // the session was not brought into existence by it, whatever an earlier
+    // `mkdir` asked for. Uncorroborated, the exemption is forgeable twice over —
+    // `mkdir -p X` on an existing X succeeds and creates nothing, and a model
+    // whose `rm -rf X` was just refused can issue exactly that and retry, which
+    // turns a denied delete into its own permission on the next turn. The
+    // corroboration costs nothing where the exemption was earned: a tree the
+    // session really did make has no pre-session content to find.
+    if !probe.holds_pre_session_content && session.created_dirs(env).contains(norm) {
         return None;
     }
-
-    Some(format!(
-        "recursively deletes {} — an existing directory this session did not create ({})",
-        target.norm,
-        probe.describe()
-    ))
+    Some(probe)
 }
 
 /// A recursive delete in `command` that criterion 5 escalates, if any.
@@ -1573,7 +1669,7 @@ mod tests {
     // --- the inspector, end to end (the directive's gates) -----------------
 
     use crate::conversation::message::ToolRequest;
-    use rmcp::model::CallToolRequestParams;
+    use rmcp::model::{CallToolRequestParams, CallToolResult};
 
     fn write_request(id: &str, path: &str) -> ToolRequest {
         ToolRequest {
@@ -2196,18 +2292,46 @@ record_result("ok");"#;
         command_is_sensitive(command, &env, session)
     }
 
+    /// A session that began *before* the fixtures were written — the shape a
+    /// directory the session really did create arrives in, since its content
+    /// then post-dates the session start.
+    fn started_before_fixtures() -> SystemTime {
+        SystemTime::now() - Duration::from_secs(600)
+    }
+
+    /// One *completed* tool call: the request the model wrote, plus the response
+    /// the agent wrote once it returned. `ran_ok = false` is the response of a
+    /// call that was refused at the approval prompt or failed — history that
+    /// records an intention, never an effect.
+    fn command_history(id: &str, command: &str, ran_ok: bool) -> Vec<Message> {
+        vec![
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(args(json!({ "command": command }))),
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                id,
+                Ok(CallToolResult {
+                    content: vec![rmcp::model::Content::text(if ran_ok {
+                        "ok"
+                    } else {
+                        "denied by the user"
+                    })],
+                    structured_content: None,
+                    is_error: Some(!ran_ok),
+                    meta: None,
+                }),
+            ),
+        ]
+    }
+
     fn mkdir_history(id: &str, path: &Path) -> Vec<Message> {
-        vec![Message::assistant().with_tool_request(
-            id,
-            Ok(CallToolRequestParams {
-                task: None,
-                name: "developer__shell".into(),
-                arguments: Some(args(
-                    json!({ "command": format!("mkdir -p {}", path.display()) }),
-                )),
-                meta: None,
-            }),
-        )]
+        command_history(id, &format!("mkdir -p {}", path.display()), true)
     }
 
     #[test]
@@ -2228,25 +2352,91 @@ record_result("ok");"#;
         );
     }
 
+    /// The fixture is a repository, and the session started before it existed —
+    /// the shape a directory the session really did create arrives in. The `.git`
+    /// is what keeps the provenance load-bearing: without it the age rule alone
+    /// would exempt the fixture and the test would pass for a deleted exemption.
     #[test]
     fn recursive_delete_of_a_directory_this_session_created_does_not_ask() {
         let scratch = Scratch::new();
-        let victim = scratch.populated("scratch-build", 4);
+        let victim = scratch.repo("scratch-build");
         let command = format!("rm -rf {}", victim.display());
 
         // Control: the identical fixture and command WITHOUT the history is
         // escalated, so the exemption below is the provenance doing the work
         // rather than the fixture never having matched.
-        let no_history = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        let no_history = CallSession::new(scratch.path(), started_before_fixtures(), &[], &[]);
         assert!(shell_finding(&command, &no_history).is_some());
 
         let history = mkdir_history("req_mkdir", &victim);
-        let session = CallSession::new(scratch.path(), started_after_fixtures(), &history, &[]);
+        let session = CallSession::new(scratch.path(), started_before_fixtures(), &history, &[]);
         assert_eq!(
             shell_finding(&command, &session),
             None,
             "a directory an earlier call in this session created is the session's own work"
         );
+    }
+
+    /// The retry-escalation attack, and the reason provenance is corroborated
+    /// against the filesystem: a model whose `rm -rf` was refused issues
+    /// `mkdir -p <same path>` — which succeeds on an existing directory and
+    /// creates nothing — and retries the delete. The history now says the
+    /// session made it. The directory's own contents say otherwise, and they
+    /// win: a denied operation must not become its own permission.
+    #[test]
+    fn a_mkdir_over_an_established_directory_is_not_provenance_for_deleting_it() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("kdps-build", 4);
+        let command = format!("rm -rf {}", victim.display());
+
+        // The `mkdir -p` really ran, really succeeded, and is a separate call in
+        // an earlier turn — every condition the old rule asked for.
+        let history = mkdir_history("req_mkdir", &victim);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &history, &[]);
+        assert!(
+            shell_finding(&command, &session).is_some(),
+            "a mkdir over a directory full of pre-session content creates nothing, \
+             and must not launder the delete that follows it"
+        );
+
+        // Control: the identical history against a directory whose content the
+        // session really did produce still exempts, so the corroboration narrows
+        // the exemption rather than removing it.
+        let own = scratch.repo("session-made");
+        let own_history = mkdir_history("req_mkdir2", &own);
+        let own_session =
+            CallSession::new(scratch.path(), started_before_fixtures(), &own_history, &[]);
+        assert_eq!(
+            shell_finding(&format!("rm -rf {}", own.display()), &own_session),
+            None
+        );
+    }
+
+    /// Provenance is read off the *response* the agent wrote, not the request the
+    /// model wrote: a creation that was refused at the approval prompt (or that
+    /// failed) never happened, and vouches for nothing.
+    #[test]
+    fn a_creation_that_never_ran_is_not_provenance() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("kdps-build");
+        let command = format!("rm -rf {}", victim.display());
+
+        let denied = command_history(
+            "req_mkdir",
+            &format!("mkdir -p {}", victim.display()),
+            false,
+        );
+        let session = CallSession::new(scratch.path(), started_before_fixtures(), &denied, &[]);
+        assert!(
+            shell_finding(&command, &session).is_some(),
+            "a mkdir the user denied is not evidence the session created anything"
+        );
+
+        // Control: the same call with a successful response DOES exempt it, so
+        // this asserts the outcome rather than a fixture that never matched.
+        let ran = mkdir_history("req_mkdir", &victim);
+        let ok_session = CallSession::new(scratch.path(), started_before_fixtures(), &ran, &[]);
+        assert_eq!(shell_finding(&command, &ok_session), None);
     }
 
     /// The provenance rule must not let a call vouch for *itself*: the incident
@@ -2377,28 +2567,23 @@ record_result("ok");"#;
     fn a_git_repository_this_session_cloned_does_not_ask() {
         let scratch = Scratch::new();
         let repo = scratch.repo("cloned");
-        let history = vec![Message::assistant().with_tool_request(
+        let history = command_history(
             "req_clone",
-            Ok(CallToolRequestParams {
-                task: None,
-                name: "developer__shell".into(),
-                arguments: Some(args(json!({
-                    "command": format!(
-                        "cd {} && git clone https://example.org/cloned.git",
-                        scratch.path().display()
-                    )
-                }))),
-                meta: None,
-            }),
-        )];
+            &format!(
+                "cd {} && git clone https://example.org/cloned.git",
+                scratch.path().display()
+            ),
+            true,
+        );
         let command = format!("rm -rf {}", repo.display());
 
         // Control: without the clone in the history this same repository is
-        // escalated (it is the `.git` fixture the positive test uses).
-        let no_history = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        // escalated (it is the `.git` fixture the positive test uses), on the
+        // same session clock — so the exemption below is the provenance.
+        let no_history = CallSession::new(scratch.path(), started_before_fixtures(), &[], &[]);
         assert!(shell_finding(&command, &no_history).is_some());
 
-        let session = CallSession::new(scratch.path(), started_after_fixtures(), &history, &[]);
+        let session = CallSession::new(scratch.path(), started_before_fixtures(), &history, &[]);
         assert_eq!(
             shell_finding(&command, &session),
             None,
@@ -2469,6 +2654,55 @@ record_result("ok");"#;
             shell_finding(&command, &session),
             None,
             "a tree produced during the session is the session's own output"
+        );
+    }
+
+    /// A glob destroys strictly more than the single path beside it, so it must
+    /// not be the one shape that walks through. The shell expands it before `rm`
+    /// runs, so the criterion grades the containing directory instead.
+    #[test]
+    fn a_glob_delete_asks_when_its_containing_directory_is_established() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("kdps-build");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+
+        for command in [
+            format!("rm -rf {}/*", victim.display()),
+            format!("cd {} && rm -rf *", victim.display()),
+            format!("cd {} && rm -rf kdps-*", scratch.path().display()),
+        ] {
+            assert!(
+                shell_finding(&command, &session).is_some(),
+                "`{command}` deletes at least as much as naming the path outright"
+            );
+        }
+    }
+
+    /// …and it inherits every exemption the named target has, so the fail-closed
+    /// rule does not become the prompt that gets Auto mode switched off.
+    #[test]
+    fn a_glob_delete_inherits_the_containing_directorys_exemptions() {
+        let scratch = Scratch::new();
+        let regenerable = scratch.populated("node_modules", 3);
+        let fresh = scratch.populated("session-output", 3);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+
+        assert_eq!(
+            shell_finding(&format!("rm -rf {}/*", regenerable.display()), &session),
+            None,
+            "clearing a regenerable directory must not prompt, glob or not"
+        );
+        // Control: the same glob one level up, where the container is the user's
+        // own tree, IS escalated.
+        assert!(
+            shell_finding(&format!("rm -rf {}/*", scratch.path().display()), &session).is_some()
+        );
+
+        // Content that post-dates the session is the session's own output.
+        let own = CallSession::new(scratch.path(), started_before_fixtures(), &[], &[]);
+        assert_eq!(
+            shell_finding(&format!("rm -rf {}/*", fresh.display()), &own),
+            None
         );
     }
 
@@ -2569,7 +2803,10 @@ record_result("ok");"#;
         for command in [
             format!("rm -rf \"{}\"", victim.display()),
             format!("rm -rf '{}'", victim.display()),
-            format!("cd \"{}\" && rm -rf \"My Analysis 2026\"", scratch.path().display()),
+            format!(
+                "cd \"{}\" && rm -rf \"My Analysis 2026\"",
+                scratch.path().display()
+            ),
         ] {
             assert!(
                 shell_finding(&command, &session).is_some(),
