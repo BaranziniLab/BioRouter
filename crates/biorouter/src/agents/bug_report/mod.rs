@@ -477,9 +477,11 @@ pub async fn handle_report_bug(
         )
         .await;
     }
+    let effective_tier = current_classification(session, session_manager.as_ref()).await?;
     file_report(
         &arguments,
         session,
+        effective_tier,
         evidence,
         user_description,
         &scrubbed_working_dir,
@@ -487,6 +489,41 @@ pub async fn handle_report_bug(
         cancel,
     )
     .await
+}
+
+/// The classification as it is NOW, not as it was when the turn began.
+///
+/// `session.privacy_tier` is a snapshot taken when the agent loop handed this
+/// call its `Session`. The classification is a RATCHET — Gate B raises it at the
+/// top of a turn, and a tool call can raise it MID-turn, reading a private
+/// knowledge base being enough on its own. Filing publishes to a public tracker
+/// and cannot be taken back, so the only read that means anything is the one
+/// taken immediately before the decision.
+///
+/// `max` against the snapshot because the ratchet only ever rises: a store that
+/// answers with a lower value is answering about an earlier moment, and the
+/// higher of the two is the correct reading either way.
+///
+/// ⚠ A failed read REFUSES rather than falling back to the snapshot, which is
+/// the opposite of what [`conversation_for`] does — deliberately. A degraded
+/// report beats no report; a degraded privacy decision does not, because this
+/// one publishes.
+async fn current_classification(
+    session: &Session,
+    session_manager: &SessionManager,
+) -> ToolResult<SessionClassification> {
+    match session_manager.get_session(&session.id, false).await {
+        Ok(loaded) => Ok(loaded.privacy_tier.max(session.privacy_tier)),
+        Err(error) => Err(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!(
+                "Could not confirm this chat's privacy classification, so nothing was \
+                 filed: {error}. A bug report is published to a public tracker, and \
+                 that is not a decision to take on a stale reading."
+            ),
+            None,
+        )),
+    }
 }
 
 /// Scrub the model's prose, render the body, and run the harness over it.
@@ -585,6 +622,7 @@ fn prepare_report(
 async fn file_report(
     arguments: &Value,
     session: &Session,
+    effective_tier: SessionClassification,
     evidence: Evidence,
     user_description: Option<String>,
     scrubbed_working_dir: &str,
@@ -602,10 +640,7 @@ async fn file_report(
 
     // Privacy: decided AFTER the report is written, deliberately. The work is
     // the expensive part and it is not wasted — the refusal hands it back.
-    if refuses_public_disclosure(
-        session.privacy_tier,
-        crate::privacy::privacy_tiers_enabled(),
-    ) {
+    if refuses_public_disclosure(effective_tier, crate::privacy::privacy_tiers_enabled()) {
         return text(private_session_refusal(&draft.title, &body, &repo));
     }
 
@@ -628,7 +663,7 @@ async fn file_report(
     let parked = PendingUserActions::global().park(
         Some(&session.id),
         None,
-        approval_request(&draft.title, &body, &repo, &filer, session.privacy_tier),
+        approval_request(&draft.title, &body, &repo, &filer, effective_tier),
     );
     match parked.wait(APPROVAL_TTL, cancel.as_ref()).await {
         UserActionOutcome::Approved { .. } => {}
@@ -1131,6 +1166,57 @@ mod tests {
             SessionClassification::Private,
             false
         ));
+    }
+
+    /// ⚠ THE RATCHET CAN FIRE MID-TURN, and the snapshot will not show it.
+    ///
+    /// `session.privacy_tier` is captured when the agent loop hands this call
+    /// its `Session`. A chat that began PUBLIC and read a private knowledge base
+    /// three tool calls ago is private NOW, and its snapshot still says public.
+    /// Filing on the snapshot publishes that chat's contents to a public tracker.
+    ///
+    /// So this fixture is the inverse of the one below: the snapshot stays
+    /// Public and only the STORE is raised. Before `current_classification` it
+    /// filed; the assertion is that it refuses.
+    #[tokio::test]
+    async fn a_chat_privatised_mid_turn_is_refused_on_the_stored_tier_not_the_snapshot() {
+        if !crate::privacy::privacy_tiers_enabled() {
+            return;
+        }
+        let (_dir, manager, session) = session_with_failures(2).await;
+        assert_ne!(
+            session.privacy_tier,
+            SessionClassification::Private,
+            "the fixture only means anything if the SNAPSHOT starts non-private"
+        );
+
+        manager
+            .update(&session.id)
+            .raise_privacy(
+                SessionClassification::Private,
+                "test:ratcheted-after-the-turn-began",
+            )
+            .apply()
+            .await
+            .expect("the store accepts the ratchet");
+
+        let result = crate::user_surface::without_human_surface(handle_report_bug(
+            file_args(),
+            &session,
+            manager,
+            None,
+        ))
+        .await;
+        let body = body_of(&result);
+        assert!(
+            body.contains("classified PRIVATE"),
+            "a chat privatised after the turn began must still be refused; the \n\
+             snapshot said public and the store said private. Got: {body}"
+        );
+        assert!(
+            body.contains("I have not posted anything"),
+            "the refusal must say nothing was published: {body}"
+        );
     }
 
     /// The refusal reaches the caller with the finished report attached, so the
