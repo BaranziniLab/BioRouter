@@ -18,6 +18,7 @@ pub mod local_workflows;
 pub mod privacy;
 pub mod read_workflow_file_content;
 pub mod runtime;
+pub mod service;
 pub mod template_workflow;
 pub mod validate_workflow;
 mod workflow_extension_adapter;

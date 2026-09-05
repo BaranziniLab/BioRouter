@@ -195,6 +195,22 @@ fn local_workflow_scan_dirs() -> Vec<(PathBuf, ScanOrigin)> {
     )
 }
 
+/// The directories a listing scan enumerates, as plain paths.
+///
+/// The staleness fingerprint in [`crate::workflow::service`] needs the real root
+/// set, and "real" is load-bearing: a hand-rolled guess at the roots (the global
+/// library plus `<cwd>/.biorouter/workflows`) omits every
+/// `BIOROUTER_WORKFLOW_PATH` entry and the opted-in working directory, so a
+/// workflow added in one of those would never invalidate the cache and the id
+/// map would answer from a snapshot taken before it existed. A cache keyed on
+/// the wrong roots is worse than no cache, because it looks like it is working.
+pub fn workflow_scan_roots() -> Vec<PathBuf> {
+    local_workflow_scan_dirs()
+        .into_iter()
+        .map(|(dir, _origin)| dir)
+        .collect()
+}
+
 /// The directories searched when the caller *names* a workflow.
 ///
 /// This always includes the working directory, and that is not the behaviour
