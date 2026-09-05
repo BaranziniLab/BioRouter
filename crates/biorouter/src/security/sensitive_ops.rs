@@ -56,23 +56,30 @@
 //!      would get Auto mode switched off, which is a worse outcome than the
 //!      hole.
 //!
-//!      **Provenance is corroborated, never taken on the model's word.** The
-//!      "this session created it" exemption is the one input an *attacker in
-//!      the loop* writes, so it is only consulted for a call that actually ran
-//!      and succeeded (the paired `ToolResponse`, which the agent writes, not
-//!      the request, which the model writes) *and* only where the filesystem
-//!      does not contradict it — a directory holding content older than the
-//!      session was not created by it. Both halves close a real hole: a
-//!      **denied** `mkdir` sat in the request stream and vouched for the delete
-//!      that followed, and `mkdir -p X` on an existing `X` succeeds while
-//!      creating nothing, so a model whose `rm -rf X` had just been refused
-//!      could manufacture its own permission and retry on the next turn.
+//! ## Provenance is corroborated, never taken on the model's word
 //!
-//!      A **glob** delete (`rm -rf *`, `rm -rf kdps-*`) is graded on its
-//!      containing directory, because the shell expands the pattern and the
-//!      paths destroyed are never in the command text. It destroys strictly
-//!      more than the named target beside it, so it fails **closed** rather
-//!      than falling silently outside the criterion.
+//! The "this session created it" exemption is the one input an *attacker in the
+//! loop* writes, so it is only consulted for a call that actually ran and
+//! succeeded (the paired `ToolResponse`, which the agent writes, not the
+//! request, which the model writes) *and* only where the filesystem does not
+//! contradict it — a directory holding content older than the session was not
+//! created by it. Both halves close a real hole: a **denied** `mkdir` sat in
+//! the request stream and vouched for the delete that followed, and
+//! `mkdir -p X` on an existing `X` succeeds while creating nothing, so a model
+//! whose `rm -rf X` had just been refused could manufacture its own permission
+//! and retry on the next turn.
+//!
+//! ⚠ Over a directory that already holds a `.git`, the filesystem cannot
+//! adjudicate (its content may all post-date the session), so provenance there
+//! is restricted to verbs that FAIL on a populated existing tree — `git clone`,
+//! `git worktree add`, `cargo new`. `git init` and every bare `mkdir` spelling
+//! are excluded precisely because they succeed as no-ops and are therefore
+//! replayable over the victim.
+//!
+//! A **glob** delete (`rm -rf *`, `rm -rf kdps-*`) is graded on its containing
+//! directory, because the shell expands the pattern and the paths destroyed are
+//! never in the command text. It fails **closed** rather than falling silently
+//! outside the criterion.
 //!
 //! Reads are intentionally out of scope here: secret-file reads are already
 //! denied by `SecretGuard`. Only mutations escalate, so that ordinary Auto-mode

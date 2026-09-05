@@ -328,18 +328,29 @@ pub fn remove_extension(key: &str) {
 /// Remove an extension only when the persisted entry is still the exact entry
 /// that a destructive operation validated. A concurrent replacement is left
 /// untouched.
+/// Returns the map key the entry was actually stored under, when one was
+/// removed.
+///
+/// ⚠ **The returned key is the ROLLBACK's only way to put the entry back where
+/// it was.** `stored_key_of` deliberately resolves a hand-written `config.yaml`
+/// key that is not `config.key()` — that is the whole reason `remove_extension`
+/// works on an operator's own mapping — so the key removed is frequently NOT
+/// the derived one. Returning a bare `bool` here threw that away, and
+/// [`restore_extension_if_absent`] then re-derived `config.key()` and silently
+/// re-keyed a failed uninstall's entry to the normalized spelling: the
+/// extension survived, as intended, under a name the operator never typed.
 pub fn remove_extension_if_matches(
     key: &str,
     expected: &ExtensionEntry,
-) -> Result<bool, super::base::ConfigError> {
+) -> Result<Option<String>, super::base::ConfigError> {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let expected = expected.clone();
     let removed = Config::global().update_param::<IndexMap<String, ExtensionEntry>, _, _>(
         EXTENSIONS_CONFIG_KEY,
         |extensions| remove_matching_extension(extensions, key, &expected),
     )?;
-    let Some(removed) = removed else {
-        return Ok(false);
+    let Some((stored_key, removed)) = removed else {
+        return Ok(None);
     };
     let row = change_row(key, Some(&removed), CatalogEntryChange::Removed);
     announce(
@@ -350,16 +361,17 @@ pub fn remove_extension_if_matches(
             ..row
         },
     );
-    Ok(true)
+    Ok(Some(stored_key))
 }
 
 fn remove_matching_extension(
     extensions: &mut IndexMap<String, ExtensionEntry>,
     key: &str,
     expected: &ExtensionEntry,
-) -> Option<ExtensionEntry> {
+) -> Option<(String, ExtensionEntry)> {
     let stored_key = stored_key_of(extensions, key, expected)?;
-    extensions.shift_remove(&stored_key)
+    let removed = extensions.shift_remove(&stored_key)?;
+    Some((stored_key, removed))
 }
 
 /// Which map key actually holds `expected`, when any does.
@@ -408,11 +420,16 @@ fn stored_key_of(
 /// Restore a removed entry only when no concurrent writer has already filled
 /// its key. This is the rollback counterpart of
 /// [`remove_extension_if_matches`].
+/// `key` MUST be the key the entry was removed from — the value
+/// [`remove_extension_if_matches`] returned — not `entry.config.key()`. A
+/// rollback that re-derives the key restores the entry under the NORMALIZED
+/// spelling, so an operator's hand-written `config.yaml` mapping silently
+/// changes name on a failed uninstall.
 pub fn restore_extension_if_absent(
+    key: String,
     entry: ExtensionEntry,
 ) -> Result<bool, super::base::ConfigError> {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
-    let key = entry.config.key();
     let restored = Config::global().update_param::<IndexMap<String, ExtensionEntry>, _, _>(
         EXTENSIONS_CONFIG_KEY,
         |extensions| insert_extension_if_absent(extensions, key.clone(), entry.clone()),
@@ -567,6 +584,7 @@ mod persisted_provenance_tests {
         assert_eq!(
             remove_matching_extension(&mut extensions, "package", &replacement)
                 .unwrap()
+                .1
                 .config,
             replacement.config
         );
@@ -576,6 +594,50 @@ mod persisted_provenance_tests {
             approved.clone(),
         ));
         assert_eq!(extensions.get("package").unwrap().config, approved.config);
+    }
+
+    /// A FAILED uninstall must put the entry back under the key it was removed
+    /// from, not under the derived one.
+    ///
+    /// ⚠ The rollback is the half nobody watches: the uninstall itself is
+    /// correct, the operator sees an error, the extension still works — and its
+    /// `config.yaml` mapping has quietly been renamed from `custom-key` to the
+    /// normalized spelling. The next hand edit then targets a key that is no
+    /// longer there. This pins the round trip, which is the only place the bug
+    /// is visible: remove resolves the stored key, and restore must consume
+    /// THAT key rather than re-deriving one.
+    #[test]
+    fn a_rolled_back_uninstall_restores_the_hand_written_key() {
+        let entry = stdio_entry("custom name", "run-me");
+        let derived_key = name_to_key(&entry.config.name());
+        assert_ne!(derived_key, "custom-key", "the fixture must diverge");
+
+        let mut extensions = IndexMap::from([("custom-key".to_owned(), entry.clone())]);
+
+        // The uninstall resolves the hand-written key even though the caller
+        // asked with the derived one.
+        let (stored_key, removed) =
+            remove_matching_extension(&mut extensions, &derived_key, &entry)
+                .expect("the hand-written key resolves");
+        assert_eq!(stored_key, "custom-key", "the removal reports where it was");
+        assert!(extensions.is_empty());
+
+        // …and the rollback puts it back THERE.
+        assert!(insert_extension_if_absent(
+            &mut extensions,
+            stored_key.clone(),
+            removed,
+        ));
+        assert!(
+            extensions.contains_key("custom-key"),
+            "a failed uninstall must not rename an operator's mapping; got {:?}",
+            extensions.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !extensions.contains_key(&derived_key),
+            "restoring under the DERIVED key is the defect: {:?}",
+            extensions.keys().collect::<Vec<_>>()
+        );
     }
 
     /// ⚠ **The uninstall doors hold `name_to_key(<installed name>)`; the stored
@@ -596,7 +658,7 @@ mod persisted_provenance_tests {
         let mut extensions = IndexMap::from([("custom-key".to_owned(), entry.clone())]);
         assert_eq!(
             remove_matching_extension(&mut extensions, &derived_key, &entry),
-            Some(entry.clone()),
+            Some(("custom-key".to_owned(), entry.clone())),
         );
         assert!(extensions.is_empty());
 
@@ -616,7 +678,7 @@ mod persisted_provenance_tests {
         ]);
         assert_eq!(
             remove_matching_extension(&mut extensions, &derived_key, &entry),
-            Some(entry.clone()),
+            Some((derived_key.clone(), entry.clone())),
         );
         assert_eq!(extensions.get("aardvark"), Some(&other));
 

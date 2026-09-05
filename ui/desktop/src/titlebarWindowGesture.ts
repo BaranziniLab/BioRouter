@@ -158,6 +158,25 @@ interface ActiveDrag {
 }
 
 export const WINDOW_MOVE_TICK_MS = 16;
+/// ⚠ KNOWN GAP, Windows-only, deliberately not fixed yet (2026-09-04).
+///
+/// This constant is compared against a delta the RENDERER measures with
+/// `event.screenX` / `event.screenY` (`useTabBandWindowGesture.ts:174`), which
+/// is in **CSS pixels**, while the main process reasons about window geometry in
+/// **device-independent pixels**. On macOS and on Windows at 100% scaling the
+/// two are the same number, so the 3px "did the user drag, or merely click?"
+/// threshold is correct there.
+///
+/// On Windows with per-monitor DPI scaling (125%, 150%, …) they diverge by the
+/// scale factor, so the threshold is effectively 3 × scale. The visible symptom
+/// is small: a double-click on a scaled display whose second press wanders a
+/// pixel or two may be read as a drag and therefore not zoom.
+///
+/// It is not fixed because it cannot be VERIFIED from a Mac — it needs a Windows
+/// machine with fractional scaling in front of a person. Fixing it blind would
+/// mean converting units by a factor nobody here can observe, which is how a
+/// cosmetic gap becomes a real one. When it is fixed, the conversion belongs at
+/// the IPC boundary (one place), not at each comparison site.
 export const WINDOW_MOVE_THRESHOLD_PX = 3;
 export const WINDOW_MOVE_MAX_DURATION_MS = 30_000;
 

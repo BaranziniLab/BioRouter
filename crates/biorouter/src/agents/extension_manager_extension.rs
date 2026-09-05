@@ -968,11 +968,13 @@ impl StagedUninstall<'_> {
     }
 }
 
+/// Returns the removed entry AND the map key it actually sat under, because the
+/// rollback has to restore it under that key rather than the derived one.
 async fn remove_staged_config(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
     staged: &StagedUninstall<'_>,
     was_attached: bool,
-) -> Result<ExtensionEntry, ExtensionManagerToolError> {
+) -> Result<(String, ExtensionEntry), ExtensionManagerToolError> {
     let expected_entry = staged.entry.clone();
     let config_removed = match crate::config::extensions::remove_extension_if_matches(
         staged.config_key,
@@ -999,7 +1001,7 @@ async fn remove_staged_config(
             });
         }
     };
-    if !config_removed {
+    let Some(stored_key) = config_removed else {
         let restoration = restore_staged_package(
             manager,
             &expected_entry.config,
@@ -1016,8 +1018,8 @@ async fn remove_staged_config(
                 }
             },
         });
-    }
-    Ok(expected_entry)
+    };
+    Ok((stored_key, expected_entry))
 }
 
 async fn remove_staged_provenance(
@@ -1025,6 +1027,7 @@ async fn remove_staged_provenance(
     staged: &StagedUninstall<'_>,
     provenance: &ProvenanceTarget,
     was_attached: bool,
+    stored_key: String,
     expected_entry: ExtensionEntry,
 ) -> Result<bool, ExtensionManagerToolError> {
     let Some(provenance_result) = provenance.remove() else {
@@ -1035,7 +1038,8 @@ async fn remove_staged_provenance(
     }
 
     let config = expected_entry.config.clone();
-    let config_restored = crate::config::extensions::restore_extension_if_absent(expected_entry)
+    let config_restored =
+        crate::config::extensions::restore_extension_if_absent(stored_key, expected_entry)
         .map_err(|error| error.to_string())
         .and_then(|restored| {
             restored
@@ -1119,12 +1123,13 @@ async fn delete_staged_marketplace_package(
         });
     }
 
-    let expected_entry = remove_staged_config(manager, &staged, was_attached).await?;
+    let (stored_key, expected_entry) = remove_staged_config(manager, &staged, was_attached).await?;
     remove_staged_provenance(
         manager,
         &staged,
         &ProvenanceTarget::Install(package.provenance.clone()),
         was_attached,
+        stored_key,
         expected_entry,
     )
     .await?;
@@ -1797,12 +1802,13 @@ async fn remove_staged_extension(
         });
     }
 
-    let expected_entry = remove_staged_config(manager, &staged, was_attached).await?;
+    let (stored_key, expected_entry) = remove_staged_config(manager, &staged, was_attached).await?;
     let provenance_removed = remove_staged_provenance(
         manager,
         &staged,
         &plan.provenance,
         was_attached,
+        stored_key,
         expected_entry,
     )
     .await?;
