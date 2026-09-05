@@ -303,12 +303,45 @@ fn parse_recursive(
 /// effective argv.
 fn tokenize_stage(stage: &str, dialect: Dialect) -> Vec<String> {
     let tokens = match dialect {
-        Dialect::Posix => shlex::split(stage)
-            .unwrap_or_else(|| stage.split_whitespace().map(String::from).collect()),
+        Dialect::Posix => posix_split(stage, cfg!(target_os = "windows")),
         Dialect::PowerShell => pwsh::tokenize(stage),
         Dialect::Cmd => cmd_shell::tokenize(stage),
     };
     unwrap_wrappers(tokens)
+}
+
+/// Tokenize a POSIX stage, keeping Windows path separators intact.
+///
+/// ⚠ `shlex` implements POSIX quoting, in which `\` ESCAPES the next character.
+/// On Windows that character is the path separator, so `rm -rf C:\Users\me\proj`
+/// tokenizes as `C:Usersmeproj` — a path that exists nowhere. Every check that
+/// resolves an operand against the filesystem then finds nothing, so the
+/// recursive-delete criterion never fires and the gate is INERT on Windows.
+/// This is not theoretical: it is why 20+ `sensitive_ops` tests fail on
+/// `windows-latest` while passing everywhere else, and the tests were reporting
+/// a real production gap rather than a fixture problem.
+///
+/// Doubling the backslashes before `shlex` makes it emit them literally while
+/// leaving quoting and word-splitting untouched.
+///
+/// `windows` is a parameter rather than a `cfg!` read inside the body so both
+/// branches are exercisable from any host — a fix for a Windows-only defect that
+/// can only be tested on Windows is a fix nobody can check.
+///
+/// The trade is a `\ ` escape for a literal space, which on Windows loses to
+/// path separators overwhelmingly. It also errs in the safe direction:
+/// preserving the path makes a destructive command MORE likely to be
+/// recognised, never less.
+fn posix_split(stage: &str, windows: bool) -> Vec<String> {
+    let doubled;
+    let prepared = if windows {
+        doubled = stage.replace('\\', "\\\\");
+        doubled.as_str()
+    } else {
+        stage
+    };
+    shlex::split(prepared)
+        .unwrap_or_else(|| stage.split_whitespace().map(String::from).collect())
 }
 
 fn stage_binary_is_shell(stage: &str, dialect: Dialect) -> bool {
@@ -847,4 +880,59 @@ fn home_dir() -> Option<String> {
         .ok()
         .filter(|h| !h.is_empty())
         .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()))
+}
+
+#[cfg(test)]
+mod posix_split_tests {
+    use super::posix_split;
+
+    /// ⚠ The Windows-only defect this exists for: `shlex` treats `\` as a POSIX
+    /// escape, so a Windows path loses every separator and resolves to nothing.
+    /// A criterion that resolves the operand against the filesystem then finds
+    /// no directory and stays silent — the recursive-delete gate was INERT on
+    /// Windows, and 20+ `sensitive_ops` tests said so on `windows-latest` while
+    /// passing on every other host.
+    ///
+    /// Both branches are asserted from ANY host, deliberately: gating the test
+    /// on `cfg!(windows)` would mean the fix could only ever be checked by the
+    /// one runner that was already failing.
+    #[test]
+    fn a_windows_path_keeps_its_separators() {
+        let stage = r"rm -rf C:\Users\me\project";
+
+        let unix = posix_split(stage, false);
+        assert_eq!(
+            unix.last().map(String::as_str),
+            Some("C:Usersmeproject"),
+            "the POSIX reading is unchanged — this is what Windows was getting"
+        );
+
+        let windows = posix_split(stage, true);
+        assert_eq!(
+            windows.last().map(String::as_str),
+            Some(r"C:\Users\me\project"),
+            "on Windows the separators must survive, or the operand resolves to \
+             a path that does not exist and the gate never fires"
+        );
+    }
+
+    /// The extended-length form the test fixtures actually produce
+    /// (`TempDir` + canonicalize on Windows), which is where this was caught.
+    #[test]
+    fn an_extended_length_unc_path_survives() {
+        let stage = r"rm -rf \\?\D:\a\biorouter\target\scratch\kdps-build";
+        assert_eq!(
+            posix_split(stage, true).last().map(String::as_str),
+            Some(r"\\?\D:\a\biorouter\target\scratch\kdps-build")
+        );
+    }
+
+    /// Quoting and word-splitting must be untouched — the doubling happens
+    /// before `shlex`, not instead of it.
+    #[test]
+    fn quoting_and_word_splitting_still_work_under_the_windows_reading() {
+        let split = posix_split(r#"rm -rf "C:\Program Files\My App""#, true);
+        assert_eq!(split.len(), 3, "the quoted path stays ONE token: {split:?}");
+        assert_eq!(split.last().map(String::as_str), Some(r"C:\Program Files\My App"));
+    }
 }
