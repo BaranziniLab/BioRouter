@@ -158,7 +158,21 @@ impl TodoClient {
             .await
             .map_err(|_| "Failed to read session metadata".to_string())?;
 
-        let mut state = TodoState::load(&session.extension_data).unwrap_or_default();
+        // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load` reports
+        // a blob this build cannot parse as `None`, and the write below replaces
+        // the WHOLE `todo.v1` key — so one `todo_add` against a checklist a
+        // newer build wrote would silently destroy it. Refuse instead: the blob
+        // stays exactly where it is.
+        let mut state = TodoState::try_load(&session.extension_data)
+            .map_err(|unreadable| {
+                format!(
+                    "This session's stored checklist (`{}`) was written by a newer build of \
+                     Biorouter and cannot be read here. Leaving it untouched rather than \
+                     overwriting it — update Biorouter to change this checklist.",
+                    unreadable.key
+                )
+            })?
+            .unwrap_or_default();
         let message = f(&mut state)?;
 
         state
@@ -1214,5 +1228,59 @@ mod tests {
         .await;
         assert_eq!(bad_anchor.is_error, Some(true));
         assert!(!client.get_moim(&id).await.unwrap().contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn a_checklist_this_build_cannot_parse_is_refused_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "unreadable checklist").await;
+
+        // A `todo.v1` blob carrying a status word only a NEWER build knows —
+        // the shape this build was destroying, because an unparseable blob and
+        // an absent one both arrived as `None` and were then written over.
+        let future = serde_json::json!({
+            "items": [{"id": "1", "text": "the user's real checklist", "status": "deferred"}],
+            "plan": "the user's real plan"
+        });
+        let manager = &client.context.session_manager;
+        let mut session = manager.get_session(&id, false).await.unwrap();
+        session
+            .extension_data
+            .set_extension_state("todo", "v1", future.clone());
+        manager
+            .update(&id)
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .unwrap();
+
+        for (tool, args) in [
+            ("todo_add", serde_json::json!({"items": ["something new"]})),
+            (
+                "todo_write",
+                serde_json::json!({"content": "- [ ] wipe it"}),
+            ),
+            (
+                "todo_update",
+                serde_json::json!({"id": "1", "status": "completed"}),
+            ),
+            ("plan_write", serde_json::json!({"plan": "a new plan"})),
+        ] {
+            let refused = call(&client, &id, tool, args).await;
+            assert_eq!(refused.is_error, Some(true), "{tool}: {}", text(&refused));
+            assert!(
+                text(&refused).contains("newer build"),
+                "{tool}: {}",
+                text(&refused)
+            );
+
+            // The whole point: the stored blob is untouched after the refusal.
+            let after = manager.get_session(&id, false).await.unwrap();
+            assert_eq!(
+                after.extension_data.get_extension_state("todo", "v1"),
+                Some(&future),
+                "{tool} overwrote a checklist it could not read"
+            );
+        }
     }
 }

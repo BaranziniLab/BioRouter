@@ -44,7 +44,13 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
       // that, until it shipped — made the item VANISH from the panel while the
       // backend still tracked it: a task the user believes is on the list and
       // cannot see. An unknown status now degrades to `pending` instead.
-      const raw = item.status ?? 'pending';
+      // `blocked` is persisted as an additive flag beside a `status` word a
+      // reader predating the variant can parse (`in_progress`), because the
+      // status word itself went into the unchanged `todo.v1` key and an older
+      // Biorouter that cannot parse the blob overwrites it. See the
+      // `BLOCKED_WIRE_STATUS` note in `session/extension_data.rs`. The flag
+      // wins, so the panel still shows a blocked item as blocked.
+      const raw = item.blocked === true ? 'blocked' : (item.status ?? 'pending');
       const status: TodoStatus = isTodoStatus(raw) ? raw : 'pending';
       seen.add(item.id);
       const parent = typeof item.parent === 'string' && item.parent ? item.parent : undefined;
