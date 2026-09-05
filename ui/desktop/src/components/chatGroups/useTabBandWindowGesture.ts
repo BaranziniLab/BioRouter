@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
 
+// The move threshold main applies before it repositions anything. Imported
+// rather than restated so the two halves of one gesture cannot drift; the
+// module is pure arithmetic with no Electron import, which is what makes it
+// safe to pull into the renderer bundle.
+import { WINDOW_MOVE_THRESHOLD_PX } from '../../titlebarWindowGesture';
+
 /**
  * The empty part of the tab band behaves like a titlebar: press-and-drag moves
  * the window, double-click zooms it.
@@ -63,6 +69,13 @@ export interface TabBandWindowGesture {
 export function useTabBandWindowGesture(): TabBandWindowGesture {
   const draggingRef = useRef(false);
   const detachRef = useRef<(() => void) | null>(null);
+  // Where the most recent band press went down, in SCREEN coordinates. Screen
+  // rather than client because the window is tracking the cursor exactly during
+  // a drag, so the press's CLIENT position barely changes however far the user
+  // drags — the frame that moves is the one that cannot measure the movement.
+  // Read once, by `onDoubleClick`, and deliberately NOT cleared by `endDrag`:
+  // the release that ends the drag is what fires the double-click.
+  const pressOriginRef = useRef<{ x: number; y: number } | null>(null);
 
   const endDrag = useCallback(() => {
     detachRef.current?.();
@@ -89,11 +102,21 @@ export function useTabBandWindowGesture(): TabBandWindowGesture {
       // the running app with real CGEventPost input, both presses of a genuine
       // double-click arrive as `detail: 0`, so such a guard fires only under
       // synthetic events and is dead where it matters. The second press does
-      // start a drag, and two other things make that harmless: main's movement
-      // threshold means a stationary press moves nothing, and `onDoubleClick`
-      // below ends the drag before it asks for the zoom.
+      // start a drag, and three other things make that harmless: main's
+      // movement threshold means a stationary press moves nothing,
+      // `onDoubleClick` below ends the drag before it asks for the zoom, and it
+      // asks for no zoom at all if that press was actually dragged.
       const bridge = gestureBridge();
       if (!bridge) return;
+
+      // CLOSE THE PREVIOUS PRESS FIRST. `detachRef` is a single slot, so a
+      // second press that arrives with a drag still open — the second half of a
+      // double-click, or a press whose release was swallowed by something that
+      // never let it through — would overwrite the only handle to the previous
+      // listener set and leave it attached to `window` for the life of the
+      // strip. Idempotent, and a no-op when nothing is open.
+      endDrag();
+      pressOriginRef.current = { x: event.screenX, y: event.screenY };
 
       const element = event.currentTarget;
       // Pointer capture so the release still reaches us once the window has run
@@ -131,10 +154,31 @@ export function useTabBandWindowGesture(): TabBandWindowGesture {
   const onDoubleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       if (!isBandBackground(event)) return;
+      // A DRAGGED DOUBLE-CLICK IS A DRAG, NOT A ZOOM. The second press starts a
+      // drag (see the note above — there is no usable `detail` to tell the two
+      // presses apart), and if the user moved during it the window is now where
+      // they put it. Zooming would throw that position away and resize a window
+      // the user was only moving. `dblclick` carries the RELEASE position, so
+      // measuring it against this press's origin is the same question main asks
+      // before it moves anything.
+      //
+      // Main's own threshold, because a press it declined to act on moved
+      // nothing and must still zoom. The units are not identical — `screenX` is
+      // CSS pixels and main's is DIP, the Windows per-monitor-DPI trap
+      // `windowDrag.ts`'s `normalizeToDip` exists for — so the two agree exactly
+      // at scale 1 and to within a pixel or two elsewhere. That is enough to
+      // tell a drag from a click, which is all this decides.
+      const origin = pressOriginRef.current;
+      const dragged =
+        origin !== null &&
+        (Math.abs(event.screenX - origin.x) >= WINDOW_MOVE_THRESHOLD_PX ||
+          Math.abs(event.screenY - origin.y) >= WINDOW_MOVE_THRESHOLD_PX);
       // Whatever the press started, the double-click supersedes it — main ends
       // any open drag on this channel too, so the two cannot both act on the
-      // window's bounds.
+      // window's bounds. This runs even when the zoom below does not: a drag
+      // that is over still owes main its end message.
       endDrag();
+      if (dragged) return;
       gestureBridge()?.windowToggleZoom();
     },
     [endDrag]

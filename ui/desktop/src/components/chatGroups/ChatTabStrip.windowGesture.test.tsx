@@ -171,6 +171,35 @@ describe('ChatTabStrip — the empty band drags the window', () => {
     expect(bridge.windowDragEnd).toHaveBeenCalledTimes(1);
   });
 
+  it('detaches the first press before a second one takes its slot', () => {
+    // `detachRef` is a SINGLE SLOT. A second press arriving with a drag still
+    // open — the second half of a double-click, or a press whose release was
+    // swallowed — used to overwrite the only handle to the previous window
+    // listeners, leaving them attached for the life of the strip. A leaked
+    // capture-phase listener is silent (its `endDrag` finds nothing to end), so
+    // the balance of add/remove is the only thing that can see it.
+    renderStrip();
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+    try {
+      fireEvent.pointerDown(band(), { button: 0, pointerId: 1, detail: 0 });
+      fireEvent.pointerDown(band(), { button: 0, pointerId: 2, detail: 0 });
+      fireEvent.pointerUp(document.body, { pointerId: 2 });
+
+      const added = addSpy.mock.calls.filter(([type]) => type === 'pointerup').length;
+      const removed = removeSpy.mock.calls.filter(([type]) => type === 'pointerup').length;
+      expect(added).toBe(2);
+      expect(removed).toBe(2);
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+    // And the superseded drag is ended on the wire too, before the new one
+    // starts — main's `begin` supersedes as well, so the order is what matters.
+    expect(bridge.windowDragStart).toHaveBeenCalledTimes(2);
+    expect(bridge.windowDragEnd).toHaveBeenCalledTimes(2);
+  });
+
   it('does not send an end for a press it declined to act on', () => {
     renderStrip();
     fireEvent.pointerDown(screen.getByRole('tab', { name: /Chat 2/ }), { button: 0, pointerId: 1 });
@@ -193,6 +222,51 @@ describe('ChatTabStrip — the empty band zooms on double-click', () => {
     fireEvent.doubleClick(screen.getByRole('tab', { name: /Chat 1/ }));
     fireEvent.doubleClick(screen.getByTestId('new-tab'));
     expect(bridge.windowToggleZoom).not.toHaveBeenCalled();
+  });
+
+  it('does NOT zoom when the second press was dragged', () => {
+    // THE GESTURE THAT DID BOTH. The second press of a double-click starts a
+    // drag (there is no usable `detail` to tell the two presses apart), so a
+    // user who presses twice and drags the second press has MOVED the window —
+    // and an unconditional zoom then resizes it and throws that position away.
+    // `dblclick` carries the release position, so the press origin recorded on
+    // `pointerdown` is what says whether this was a drag.
+    renderStrip();
+    fireEvent.pointerDown(band(), {
+      button: 0,
+      pointerId: 1,
+      detail: 0,
+      screenX: 400,
+      screenY: 12,
+    });
+    fireEvent.pointerUp(band(), { pointerId: 1 });
+    fireEvent.pointerDown(band(), {
+      button: 0,
+      pointerId: 1,
+      detail: 0,
+      screenX: 400,
+      screenY: 12,
+    });
+    fireEvent.doubleClick(band(), { screenX: 540, screenY: 260 });
+    expect(bridge.windowToggleZoom).not.toHaveBeenCalled();
+    // The drag still owes main its end message whether or not the zoom happens.
+    expect(bridge.windowDragEnd).toHaveBeenCalledTimes(2);
+  });
+
+  it('still zooms when the press only jittered inside the move threshold', () => {
+    // The other half of the same rule, and the reason the threshold is main's
+    // own: a press below it moved NOTHING, so there is no position to protect
+    // and a hand-tremor double-click must still zoom.
+    renderStrip();
+    fireEvent.pointerDown(band(), {
+      button: 0,
+      pointerId: 1,
+      detail: 0,
+      screenX: 400,
+      screenY: 12,
+    });
+    fireEvent.doubleClick(band(), { screenX: 402, screenY: 13 });
+    expect(bridge.windowToggleZoom).toHaveBeenCalledTimes(1);
   });
 
   it('closes any open drag before it zooms', () => {

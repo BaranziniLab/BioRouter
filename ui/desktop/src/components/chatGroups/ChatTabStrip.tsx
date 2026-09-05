@@ -426,11 +426,18 @@ export function ChatTabStrip({
         // 8px further right. The right half of the shorthand is untouched.
         style={{ paddingLeft: 0, WebkitAppRegion: 'no-drag' } as CSSProperties}
         // THE EMPTY BAND IS A TITLEBAR — and this is how, given that it cannot
-        // be an app region. Every handler is gated on `target === currentTarget`
-        // inside the hook, so only the background of the scroll box (and the 3px
-        // gaps between tabs) acts: a press on a tab, its close control or the
-        // end slot has a deeper target and is untouched. `beginDrag` on the tab
-        // still owns tab drags, and it never sees these events.
+        // be an app region. The two handlers that START something —
+        // `onPointerDown` and `onDoubleClick` — are gated on
+        // `target === currentTarget` inside the hook, so only the background of
+        // the scroll box (and the 3px gaps between tabs) begins a gesture: a
+        // press on a tab, its close control or the end slot has a deeper target
+        // and is untouched. `beginDrag` on the tab still owns tab drags, and it
+        // never sees these events.
+        //
+        // The three that END a press are deliberately NOT gated. A release has
+        // to close an open drag wherever it lands — the strip may have
+        // re-rendered under the gesture, and main cannot see the button come up
+        // — and ending a drag that was never started is a no-op.
         //
         // Nothing here declares an app region, which is the whole point: the
         // `no-drag` box above stays identical for zero tabs and for twenty, so

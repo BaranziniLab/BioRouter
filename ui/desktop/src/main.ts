@@ -2541,7 +2541,13 @@ const windowMoveDrag = new WindowMoveDragController({
 
 function movableWindowFor(event: Electron.IpcMainEvent): MovableWindow | null {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return null;
+  // ONLY CHAT WINDOWS MOVE THIS WAY. Every window that loads `preload.js` can
+  // reach this channel — launcher, artifact, app preview — and only a chat
+  // window has a tab band to press, so a message from any of the others is a
+  // window the gesture has no business moving. `windowMap` is exactly the set
+  // `createChat` builds, which is the same membership test
+  // `tab-drag:register-bands` uses for the same reason.
+  if (!win || win.isDestroyed() || !windowMap.has(win.id)) return null;
   const sender = event.sender;
   return {
     id: win.id,
@@ -2569,12 +2575,21 @@ ipcMain.on('window:drag-end', (event) => {
   // Named, so a stale end from a window that is no longer the one being dragged
   // cannot cancel someone else's drag. The renderer sends this from four
   // redundant places on purpose.
+  //
+  // NO `windowMap` TEST HERE, unlike the two channels above and below, and that
+  // is deliberate: this only ever STOPS a drag, `end` ignores an id that is not
+  // the one being dragged, and a window outside `windowMap` could never have
+  // started one. Gating it would be a way to STRAND a drag, never a way to
+  // prevent one — including for a window that leaves the map mid-press.
   windowMoveDrag.end(win?.id);
 });
 
 ipcMain.on('window:toggle-zoom', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return;
+  // Chat windows only, for the reason spelled out on `movableWindowFor`: a
+  // channel that resizes any window that loaded `preload.js` is broader than
+  // the one gesture it exists for.
+  if (!win || win.isDestroyed() || !windowMap.has(win.id)) return;
   // The press that opened this double-click also opened a drag. Ending it here
   // rather than trusting the renderer's `pointerup` to have landed first means
   // the timer can never be re-positioning the window against bounds that the
