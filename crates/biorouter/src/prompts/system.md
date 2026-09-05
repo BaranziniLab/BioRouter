@@ -104,7 +104,7 @@ This extension is loaded but has no effective tools for this turn; do not follow
 No third-party extensions are loaded for this turn.
 {% endif %}
 
-{% if installed_extension_discovery_available or marketplace_extension_search_available or extension_state_change_available or extension_package_install_available or extension_package_delete_available %}
+{% if installed_extension_discovery_available or marketplace_extension_search_available or extension_state_change_available or extension_package_install_available or extension_package_delete_available or extension_removal_available %}
 The Extension Manager capability can do only what this turn's effective roster allows:
 {% if installed_extension_discovery_available %}
 - discover installed extensions and their exact names.
@@ -121,7 +121,13 @@ The Extension Manager capability can do only what this turn's effective roster a
 - install an extension package by exact trusted registry id through Biorouter's approval flow.
 {% endif %}
 {% if extension_package_delete_available %}
-- permanently delete an installed extension package through Biorouter's approval flow.
+- permanently delete an installed marketplace extension package by exact registry id, through Biorouter's approval
+  flow.
+{% endif %}
+{% if extension_removal_available %}
+- permanently remove any installed extension by its exact installed name, through Biorouter's approval flow. This is
+  the one uninstall path for an extension that did not come from the marketplace and so has no registry id; never
+  hand-edit configuration or provenance files to remove one.
 {% endif %}
 Mentioning or recommending an extension is not permission to change its state or packages.
 {% else %}

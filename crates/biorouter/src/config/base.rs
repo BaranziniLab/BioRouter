@@ -2256,8 +2256,7 @@ mod tests {
         }
         impl KeyringBlobStore for CountingStore {
             fn get(&self, _username: &str) -> Result<String, keyring::Error> {
-                self.reads
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 // Slow enough that concurrent callers genuinely overlap; a fast
                 // fake would let them serialise by luck and pass either way.
                 std::thread::sleep(std::time::Duration::from_millis(40));

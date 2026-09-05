@@ -218,6 +218,49 @@ enum ProvenanceMutation {
     DeleteIfMatches {
         expected: MarketplaceInstallProvenance,
     },
+    /// Whole-record tombstone for an uninstall that has no marketplace shape.
+    ///
+    /// [`Self::DeleteIfMatches`] can only name a record that carries BOTH an
+    /// `install_dir` and a `source_url`, because those two fields are what
+    /// [`record_matches_install`] compares. A record written before those
+    /// fields existed, or by a writer that had neither to hand, is therefore
+    /// unnameable by it — and `remove_extension`, which deletes extensions that
+    /// never came from the marketplace at all, is exactly the caller that meets
+    /// those records. It compares the WHOLE record instead, so a concurrent
+    /// reinstall that rewrote any field is left alone for the same reason the
+    /// narrower tombstone leaves one alone.
+    DeleteRecordIfMatches {
+        key: String,
+        record: ExtensionProvenance,
+    },
+}
+
+/// One pending deletion, whichever shape named it.
+///
+/// The journal replay asks this rather than matching on the mutation twice: the
+/// `retain` below and the pointer sweep further down must agree about which
+/// records are gone, and two separately written predicates are how they would
+/// come to disagree.
+enum Tombstone {
+    Install(MarketplaceInstallProvenance),
+    Record {
+        key: String,
+        record: ExtensionProvenance,
+    },
+}
+
+impl Tombstone {
+    fn covers(&self, key: &str, record: &ExtensionProvenance) -> bool {
+        match self {
+            Self::Install(expected) => {
+                expected.config_key == key && record_matches_install(record, expected)
+            }
+            Self::Record {
+                key: expected_key,
+                record: expected,
+            } => expected_key == key && expected == record,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +426,57 @@ where
         path,
         &ProvenanceMutation::DeleteIfMatches {
             expected: expected.clone(),
+        },
+    )?;
+    invalidate_cache();
+    maybe_compact(path);
+    Ok(true)
+}
+
+/// The provenance record stored under `config_key`, if any.
+///
+/// Deliberately keyed and NOT joined by install directory, unlike
+/// [`registry_ids_for`]. That function unions every way in because it is
+/// deciding a privacy tier and a missed record lowers one; this one is naming a
+/// record to DELETE, where a second way in could name a different extension's
+/// record.
+pub fn extension_provenance_for_key(config_key: &str) -> Option<ExtensionProvenance> {
+    cached_store_at(&provenance_path())
+        .extensions
+        .get(config_key)
+        .cloned()
+}
+
+/// Remove the record at `config_key`, but only while it is still byte-for-byte
+/// `expected`.
+///
+/// The uninstall counterpart of [`remove_marketplace_install_provenance`] for
+/// every record that one cannot name — see
+/// [`ProvenanceMutation::DeleteRecordIfMatches`]. Returns `false` when the
+/// record changed or vanished, so a caller that read it before asking a user
+/// can tell "already gone" from "replaced underneath me" and leave a
+/// replacement alone.
+pub fn remove_extension_provenance_if_matches(
+    config_key: &str,
+    expected: &ExtensionProvenance,
+) -> std::io::Result<bool> {
+    remove_extension_provenance_if_matches_at(&provenance_path(), config_key, expected)
+}
+
+fn remove_extension_provenance_if_matches_at(
+    path: &Path,
+    config_key: &str,
+    expected: &ExtensionProvenance,
+) -> std::io::Result<bool> {
+    let store = read_store_at(path);
+    if store.extensions.get(config_key) != Some(expected) {
+        return Ok(false);
+    }
+    append_mutation(
+        path,
+        &ProvenanceMutation::DeleteRecordIfMatches {
+            key: config_key.to_owned(),
+            record: expected.clone(),
         },
     )?;
     invalidate_cache();
@@ -787,15 +881,19 @@ fn apply_mutation_list(path: &Path, store: &mut Store, mutations: Vec<Provenance
     let tombstones = mutations
         .iter()
         .filter_map(|mutation| match mutation {
-            ProvenanceMutation::DeleteIfMatches { expected } => Some(expected.clone()),
+            ProvenanceMutation::DeleteIfMatches { expected } => {
+                Some(Tombstone::Install(expected.clone()))
+            }
+            ProvenanceMutation::DeleteRecordIfMatches { key, record } => Some(Tombstone::Record {
+                key: key.clone(),
+                record: record.clone(),
+            }),
             ProvenanceMutation::Upsert { .. } => None,
         })
         .collect::<Vec<_>>();
-    store.extensions.retain(|key, record| {
-        !tombstones
-            .iter()
-            .any(|expected| expected.config_key == *key && record_matches_install(record, expected))
-    });
+    store
+        .extensions
+        .retain(|key, record| !tombstones.iter().any(|dead| dead.covers(key, record)));
     let records = mutations
         .into_iter()
         .filter_map(|mutation| match mutation {
@@ -803,7 +901,8 @@ fn apply_mutation_list(path: &Path, store: &mut Store, mutations: Vec<Provenance
                 .install_id
                 .clone()
                 .map(|install_id| (install_id, (key, record))),
-            ProvenanceMutation::DeleteIfMatches { .. } => None,
+            ProvenanceMutation::DeleteIfMatches { .. }
+            | ProvenanceMutation::DeleteRecordIfMatches { .. } => None,
         })
         .collect::<HashMap<_, _>>();
     let Ok(pointers) = std::fs::read_dir(current_pointers_dir(path)) else {
@@ -821,9 +920,7 @@ fn apply_mutation_list(path: &Path, store: &mut Store, mutations: Vec<Provenance
         if key != &pointer.key {
             continue;
         }
-        let deleted = tombstones.iter().any(|expected| {
-            expected.config_key == *key && record_matches_install(record, expected)
-        });
+        let deleted = tombstones.iter().any(|dead| dead.covers(key, record));
         if !deleted {
             store.extensions.insert(key.clone(), record.clone());
         } else {

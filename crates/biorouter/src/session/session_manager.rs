@@ -1683,6 +1683,28 @@ impl SessionManager {
         self.storage.list_sessions().await
     }
 
+    /// Ids of the sessions whose stored `extension_data` blob mentions
+    /// `extension_name` anywhere, so an uninstall can prune the rosters that
+    /// still name a package it is about to delete.
+    ///
+    /// ⚠ **A coarse prefilter, not the decision.** The blob is one JSON column
+    /// shared by every per-session extension, so a `LIKE` over it can match a
+    /// todo item that happens to quote the name. The caller re-parses each
+    /// candidate's `enabled_extensions.v0` and prunes only a real entry; what
+    /// this query buys is not having to deserialize eleven thousand sessions to
+    /// find the three that matter. False positives are therefore harmless and
+    /// false negatives impossible — the roster stores the extension's config,
+    /// which carries its name.
+    ///
+    /// `sub_agent` rows are excluded: their roster is the immutable runtime
+    /// profile the run was granted, the same rule
+    /// [`crate::agents::session_extensions::record`] enforces on the write side.
+    pub async fn sessions_mentioning_extension(&self, extension_name: &str) -> Result<Vec<String>> {
+        self.storage
+            .sessions_mentioning_extension(extension_name)
+            .await
+    }
+
     /// Lightweight session rows for the History sidebar.
     ///
     /// `include_subagents` widens the type filter to `sub_agent` rows (BR-71);
@@ -4861,6 +4883,42 @@ impl SessionStorage {
             Ok(next)
         })
         .await
+    }
+
+    /// See [`SessionManager::sessions_mentioning_extension`].
+    async fn sessions_mentioning_extension(&self, extension_name: &str) -> Result<Vec<String>> {
+        // The name is matched against the blob as JSON WROTE it, not as the
+        // caller spelled it: `validate_extension_name` refuses only path
+        // separators, so a name may still contain a quote or a backslash, and
+        // those reach the column escaped. Encoding through serde and dropping
+        // the wrapping quotes is how the needle is guaranteed to be the same
+        // bytes the column holds.
+        let encoded = serde_json::to_string(extension_name)?;
+        let needle = encoded
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or(&encoded);
+        let mut pattern = String::with_capacity(needle.len() + 2);
+        pattern.push('%');
+        for character in needle.chars() {
+            if matches!(character, '%' | '_' | '\\') {
+                pattern.push('\\');
+            }
+            pattern.push(character);
+        }
+        pattern.push('%');
+
+        let pool = self.pool().await?;
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM sessions \
+             WHERE session_type != 'sub_agent' \
+               AND extension_data IS NOT NULL \
+               AND extension_data LIKE ? ESCAPE '\\'",
+        )
+        .bind(pattern)
+        .fetch_all(pool)
+        .await?;
+        Ok(ids)
     }
 
     async fn update_extension_data<F, R>(&self, session_id: &str, mutate: F) -> Result<Option<R>>

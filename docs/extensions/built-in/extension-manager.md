@@ -1,12 +1,12 @@
 # Extension Manager capability
 
-> **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small, and how it searches the trusted BAAM marketplace to install a package you don't have or permanently delete one you no longer want.
+> **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small, how it searches the trusted BAAM marketplace to install a package you don't have, and how it permanently uninstalls one you no longer want — whether or not it came from the marketplace.
 > **Status:** Current. The capability is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 You don't always need to manage extensions by hand. The Extension Manager lets BioRouter discover, enable and disable extensions during an active session. Based on the task you give it, BioRouter recognizes when it needs a specific extension, enables it, and suggests disabling unused ones when the tool bloat starts eating your context window. Describe your task and BioRouter handles the extension management.
 
-It is not limited to what you already have. When nothing installed fits the task, BioRouter can search the trusted BAAM marketplace, install a package from it with your approval, and — with a separate approval — permanently delete an installed marketplace package you no longer want.
+It is not limited to what you already have. When nothing installed fits the task, BioRouter can search the trusted BAAM marketplace, install a package from it with your approval, and — with a separate approval — permanently uninstall an extension you no longer want.
 
 > **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
@@ -51,6 +51,7 @@ The same capability also reaches past what is already installed, letting BioRout
 - **Search** the trusted BAAM marketplace for a package that fits the task
 - **Install** that package with your approval, without you leaving the chat
 - **Delete** an installed marketplace package permanently, again with your approval
+- **Remove** any other installed extension — one you sideloaded, or an MCP server added by hand — by its installed name, again with your approval
 
 The result is a more focused session where BioRouter has exactly the tools it needs, when it needs them.
 
@@ -64,11 +65,26 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 | `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model — omit the query to list everything | Finding a package to install |
 | `manage_extensions` | Enable or disable an extension by name | Loading/unloading extensions dynamically |
 | `install_extension` | Install a BAAM marketplace extension end to end | The extension is not installed at all |
-| `delete_extension_package` | Delete one or up to 50 validated marketplace packages after approval | Permanent removal; shared credentials are retained |
+| `delete_extension_package` | Delete one or up to 50 validated marketplace packages after approval | Permanent removal of something installed from BAAM; shared credentials are retained |
+| `remove_extension` | Remove one or up to 50 installed extensions by installed name after approval | Permanent removal of anything else — a sideloaded `.brxt`, a hand-configured MCP server |
 | `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
-> **Tip.** Not every tool in this table is offered in every session. The resource tools (`list_resources` and `read_resource`) appear only when at least one enabled extension supports resources. `install_extension` and `delete_extension_package` each wait on your approval, so they are withheld entirely where no one can be asked for it — on a daemon started by `biorouter serve` for browser access, for instance. Browsing and searching are read-only and always available.
+> **Tip.** Not every tool in this table is offered in every session. The resource tools (`list_resources` and `read_resource`) appear only when at least one enabled extension supports resources. `install_extension`, `delete_extension_package` and `remove_extension` each wait on your approval, so they are withheld entirely where no one can be asked for it — on a daemon started by `biorouter serve` for browser access, for instance. Browsing and searching are read-only and always available.
+
+## Uninstalling one you no longer want
+
+There are two uninstall tools because there are two ways an extension gets onto your machine, and only one of them leaves a marketplace registry id behind.
+
+`delete_extension_package` is for a package installed from BAAM. It is named by that registry id, and BioRouter re-checks the marketplace entry and the recorded install before it asks you anything.
+
+`remove_extension` is for everything else — a `.brxt` you downloaded and installed yourself, an MCP server you added to `config.yaml` by hand, anything that never had a registry id. It is named by the **installed name** you see in Settings → Extensions. Before this tool existed the agent had no way to uninstall one of these in a single step, and would instead edit your configuration file a line at a time.
+
+Both work the same way once you approve them. In one transaction BioRouter detaches the extension from the chat, removes its entry from your configuration, deletes its package directory and any skills that directory contributed, drops the record of where it came from, and clears it from every saved chat that still listed it — so reopening an old conversation does not try to launch a server that is gone. Up to 50 extensions can be named in one batch; the whole batch is validated and shown to you before anything is touched, and if the installed extension changes while the approval is on screen the removal is abandoned rather than applied to something you did not see.
+
+**Your credentials are deliberately left alone.** An API key can be shared between extensions — one UCSF credential can unlock more than one connector — so removing an extension never revokes, deletes or overwrites a stored secret. Remove a key you no longer want in Settings, where you can see what else uses it.
+
+Built-in capabilities are not removable by either tool. They are not extensions you installed, they own no package directory, and they are managed in Settings → Chat → Capabilities.
 
 ## Installing one the user does not have
 
