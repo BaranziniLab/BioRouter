@@ -29,7 +29,6 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
   const workflowParametersFromConfig = useRef<Record<string, string> | null>(paramsFromConfig);
 
   const messagesRef = useRef(messages);
-  const isCreatingWorkflowRef = useRef(false);
   const hasCheckedWorkflowRef = useRef(false);
 
   useEffect(() => {
