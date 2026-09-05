@@ -854,6 +854,14 @@ const summarizeTodoCall = (
     const count = countNamedArguments(args, 'items');
     return count > 0 ? `Adding ${count} task${count === 1 ? '' : 's'}` : 'Adding tasks';
   }
+  if (toolName === 'todo_expand') {
+    const id = namedArgument(args, ['id']);
+    const task = id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
+    const count = countNamedArguments(args, 'items');
+    return count > 0
+      ? `Breaking ${task} into ${count} step${count === 1 ? '' : 's'}`
+      : `Breaking ${task} into steps`;
+  }
   if (toolName !== 'todo_update') return null;
 
   const id = namedArgument(args, ['id']);
@@ -863,6 +871,7 @@ const summarizeTodoCall = (
   if (status === 'completed') return `Marking ${task} complete`;
   if (status === 'in_progress') return `Starting ${task}`;
   if (status === 'pending') return `Returning ${task} to pending`;
+  if (status === 'blocked') return `Marking ${task} blocked`;
   if (namedArgument(args, ['text'])) return `Renaming ${task}`;
   return `Updating ${task}`;
 };

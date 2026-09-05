@@ -1,10 +1,20 @@
 import type { Message } from '../api';
 
+export const TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed'] as const;
+
+export type TodoStatus = (typeof TODO_STATUSES)[number];
+
 export type TodoItem = {
   id: string;
   text: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: TodoStatus;
+  /** Set when the item was expanded out of another; nesting is one level deep. */
+  parent?: string;
 };
+
+function isTodoStatus(value: unknown): value is TodoStatus {
+  return TODO_STATUSES.includes(value as TodoStatus);
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -29,10 +39,16 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
         !item.text.trim()
       )
         return [];
-      const status = item.status ?? 'pending';
-      if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') return [];
+      // ⚠ Never drop the row for an unrecognised status. This used to `return
+      // []`, so a status this build had not heard of — `blocked` was exactly
+      // that, until it shipped — made the item VANISH from the panel while the
+      // backend still tracked it: a task the user believes is on the list and
+      // cannot see. An unknown status now degrades to `pending` instead.
+      const raw = item.status ?? 'pending';
+      const status: TodoStatus = isTodoStatus(raw) ? raw : 'pending';
       seen.add(item.id);
-      return [{ id: item.id, text: item.text.trim(), status }];
+      const parent = typeof item.parent === 'string' && item.parent ? item.parent : undefined;
+      return [{ id: item.id, text: item.text.trim(), status, ...(parent ? { parent } : {}) }];
     });
   }
   const legacy = record(data?.['todo.v0'])?.content;
@@ -40,7 +56,7 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
   return legacy
     .split('\n')
     .flatMap((line): TodoItem[] => {
-      const match = line.trimStart().match(/^[-*+] \[([ xX~-])\] (.+)$/);
+      const match = line.trimStart().match(/^[-*+] \[([ xX~!-])\] (.+)$/);
       if (!match || !match[2].trim()) return [];
       return [
         {
@@ -50,7 +66,9 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
             ? 'completed'
             : /[~-]/.test(match[1])
               ? 'in_progress'
-              : 'pending',
+              : match[1] === '!'
+                ? 'blocked'
+                : 'pending',
         },
       ];
     })
@@ -58,10 +76,18 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
 }
 
 /**
- * The three tools that mutate the persisted checklist. `todo__plan_write` moves
+ * The four tools that mutate the persisted checklist. `todo__plan_write` moves
  * the prose plan, not the checklist, so it is deliberately absent.
+ *
+ * ⚠ A checklist mutation missing from this list leaves the panel showing the
+ * pre-call state until something else happens to move the revision.
  */
-const TODO_MUTATION_TOOLS = ['todo__todo_write', 'todo__todo_add', 'todo__todo_update'];
+const TODO_MUTATION_TOOLS = [
+  'todo__todo_write',
+  'todo__todo_add',
+  'todo__todo_expand',
+  'todo__todo_update',
+];
 
 /**
  * Result-meta key under which one call records the sub-calls it actually ran.

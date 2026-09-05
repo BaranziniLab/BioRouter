@@ -1003,6 +1003,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS: &[&str] = &[
 const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
     "todo__plan_write",
     "todo__todo_add",
+    "todo__todo_expand",
     "todo__todo_update",
     "todo__todo_write",
 ];

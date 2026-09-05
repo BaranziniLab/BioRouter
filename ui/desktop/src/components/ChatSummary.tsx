@@ -1,8 +1,33 @@
 import type { ReactNode } from 'react';
-import { Check, CircleIcon, CircleDotDashed, CodeAnalysis, Pipeline } from './icons/app-icons';
+import {
+  AlertCircle,
+  Check,
+  CircleIcon,
+  CircleDotDashed,
+  CodeAnalysis,
+  Pipeline,
+} from './icons/app-icons';
 import { Button } from './ui/button';
 import { cn } from '../utils';
-import type { TodoItem } from '../utils/sessionTodos';
+import type { TodoItem, TodoStatus } from '../utils/sessionTodos';
+
+/**
+ * Keyed by status so a status added to the backend fails the build here rather
+ * than falling through a ternary chain and rendering as "Pending".
+ */
+const TODO_STATUS_LABELS: Record<TodoStatus, string> = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  blocked: 'Blocked',
+  completed: 'Complete',
+};
+
+const TODO_STATUS_ICONS: Record<TodoStatus, typeof CircleIcon> = {
+  pending: CircleIcon,
+  in_progress: CircleDotDashed,
+  blocked: AlertCircle,
+  completed: Check,
+};
 
 function Metric({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -79,31 +104,34 @@ export function ChatSummary({
             className="max-h-60 overflow-y-auto overscroll-contain pr-1"
           >
             {todos.items.map((item, index) => {
-              const label =
-                item.status === 'completed'
-                  ? 'Complete'
-                  : item.status === 'in_progress'
-                    ? 'In progress'
-                    : 'Pending';
-              const Icon =
-                item.status === 'completed'
-                  ? Check
-                  : item.status === 'in_progress'
-                    ? CircleDotDashed
-                    : CircleIcon;
+              const label = TODO_STATUS_LABELS[item.status];
+              const Icon = TODO_STATUS_ICONS[item.status];
+              // Expanded steps are indented under the item they came from, the
+              // one level of nesting the backend allows.
+              const nested = item.parent !== undefined;
               return (
-                <li key={item.id} className="relative flex gap-2 pb-3 last:pb-0">
+                <li
+                  key={item.id}
+                  className={cn('relative flex gap-2 pb-3 last:pb-0', nested && 'pl-4')}
+                >
                   {index < todos.items.length - 1 && (
                     <span
                       aria-hidden="true"
-                      className="absolute bottom-0 left-[7px] top-4 border-l border-border-subtle"
+                      className={cn(
+                        'absolute bottom-0 top-4 border-l border-border-subtle',
+                        nested ? 'left-[23px]' : 'left-[7px]'
+                      )}
                     />
                   )}
                   <Icon
                     aria-hidden="true"
                     className={cn(
                       'relative mt-0.5 h-4 w-4 shrink-0',
-                      item.status === 'in_progress' ? 'text-text-accent' : 'text-text-muted'
+                      item.status === 'in_progress'
+                        ? 'text-text-accent'
+                        : item.status === 'blocked'
+                          ? 'text-text-warning'
+                          : 'text-text-muted'
                     )}
                   />
                   <div className="min-w-0 flex-1 text-xs leading-relaxed">

@@ -33,22 +33,53 @@ The Todo capability keeps BioRouter organized on long tasks. BioRouter reaches f
 
 | Tool | Description |
 |------|-------------|
-| `todo_write` | Replace the entire checklist with a markdown checklist. Used to seed the initial list. |
-| `todo_add` | Append one or more pending items without rewriting the existing ones. Each new item gets a fresh `#N` id. |
+| `todo_write` | Replace the entire checklist with a markdown checklist. Used to seed the initial list. It discards every existing item and renumbers the `#N` ids, so the tools below are what BioRouter uses to change a list that already exists. |
+| `todo_expand` | Break one coarse item into the concrete steps it turned out to be, **in place**. The steps take that item's position, so the list still reads in the order the work happens, and no other item is renumbered. |
+| `todo_add` | Add pending items without rewriting the existing ones — appended by default, or inserted directly after a given `#N` id. Each new item gets a fresh id. |
 | `todo_update` | Update a single item by its `#N` id — change its status, its text, or both — without touching the rest of the list. |
 | `plan_write` | Set or update the living plan: a step-by-step plan kept current as work proceeds, re-injected into the model's context each turn alongside the checklist. An empty string clears it. |
 
 ## Checklist item states
 
-Items carry one of three states, written in the familiar markdown checkbox syntax:
+Items carry one of four states, written in the familiar markdown checkbox syntax:
 
 | Marker | State |
 |--------|-------|
 | `- [ ] task` | pending |
 | `- [~] task` | in progress |
+| `- [!] task` | blocked |
 | `- [x] task` | completed |
 
 The `[~]` in-progress marker is what makes the checklist useful while a long task is still running: it shows you which single item BioRouter is working on right now.
+
+`[!] blocked` is for work that cannot proceed until something outside BioRouter's
+control arrives — most often an answer from you. It is worth watching for: a
+blocked item is usually BioRouter telling you it is waiting on a decision.
+
+## When a task turns out to be bigger than it looked
+
+Plans start coarse. An item like "do the actual work" often turns out to be ten
+steps once BioRouter gets to it, and where those steps land matters: appended to
+the end, they would sit *after* "test and verify", and the checklist would stop
+describing the real order of the work.
+
+`todo_expand` is the operation for this. The steps replace the coarse item where
+it already sits, and by default that item stays as a heading with its steps
+nested under it:
+
+```md
+- [x] Survey the inputs
+- [x] Set up the workspace
+- [~] Do the actual work
+  - [x] Write the parser
+  - [~] Wire it into the pipeline
+  - [ ] Handle the error cases
+- [ ] Test and verify
+```
+
+Nesting stops at one level, on purpose: the checklist is there to show progress,
+not to become a project taxonomy. Every id already on the list keeps the number
+it had, so anything BioRouter was tracking still points at the same task.
 
 ## Example usage
 

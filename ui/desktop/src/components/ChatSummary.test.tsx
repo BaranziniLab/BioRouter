@@ -43,6 +43,30 @@ describe('compact chat summary', () => {
     expect(screen.queryByRole('region', { name: 'To Do progress' })).not.toBeInTheDocument();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
+  it('labels a blocked step and indents an expanded one', () => {
+    // A status the panel does not render is a task the user cannot see: the
+    // list reader keeps unknown statuses, so every one the backend can persist
+    // must have a label here.
+    render(
+      <ChatSummary
+        {...props}
+        todos={{
+          ...props.todos,
+          items: [
+            { id: '1', text: 'Do the actual work', status: 'pending' },
+            { id: '2', text: 'Write it', status: 'blocked', parent: '1' },
+          ],
+        }}
+      />
+    );
+    const rows = within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem');
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'Do the actual workPending',
+      'Write itBlocked',
+    ]);
+    expect(rows[0]).not.toHaveClass('pl-4');
+    expect(rows[1]).toHaveClass('pl-4');
+  });
   it('shows ordered, explicitly labelled steps and accessible progress', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');

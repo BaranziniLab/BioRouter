@@ -79,6 +79,33 @@ describe('persisted session checklist', () => {
     ).toEqual(['pending', 'completed', 'in_progress']);
     expect(sessionTodoItems({ 'todo.v0': { content: 'Plan prose' } })).toEqual([]);
   });
+  it('reads blocked items and the parent of an expanded step', () => {
+    expect(
+      sessionTodoItems({
+        'todo.v1': {
+          items: [
+            { id: '1', text: 'Coarse', status: 'pending' },
+            { id: '2', text: 'Step', status: 'blocked', parent: '1' },
+          ],
+        },
+      })
+    ).toEqual([
+      { id: '1', text: 'Coarse', status: 'pending' },
+      { id: '2', text: 'Step', status: 'blocked', parent: '1' },
+    ]);
+    expect(sessionTodoItems({ 'todo.v0': { content: '- [!] Waiting' } })).toEqual([
+      { id: '1', text: 'Waiting', status: 'blocked' },
+    ]);
+  });
+  it('keeps an item whose status this build does not know, as pending', () => {
+    // ⚠ Deliberately NOT dropped. An unrecognised status used to remove the row
+    // entirely, so a desktop build older than the backend hid every item in a
+    // status it had not shipped yet — `blocked` was exactly that case. A task
+    // the backend is tracking must stay visible; only its styling degrades.
+    expect(
+      sessionTodoItems({ 'todo.v1': { items: [{ id: '2', text: 'Bad', status: 'invented' }] } })
+    ).toEqual([{ id: '2', text: 'Bad', status: 'pending' }]);
+  });
   it('discards malformed entries and duplicate ids without losing valid tasks', () => {
     expect(
       sessionTodoItems({
@@ -87,7 +114,6 @@ describe('persisted session checklist', () => {
             null,
             { id: '1', text: ' Keep ' },
             { id: '1', text: 'duplicate' },
-            { id: '2', text: 'Bad', status: 'invented' },
             { id: '3', text: '' },
           ],
         },
@@ -98,7 +124,7 @@ describe('persisted session checklist', () => {
 
 describe('acknowledged To Do changes', () => {
   it('invalidates for successful write/add/update only, once per id', () => {
-    for (const name of ['todo_write', 'todo_add', 'todo_update']) {
+    for (const name of ['todo_write', 'todo_add', 'todo_expand', 'todo_update']) {
       const messages = todoExchange('a', { name: `todo__${name}` });
       expect(todoMutationRevision([...messages, ...messages])).toBe('["a"]');
     }
