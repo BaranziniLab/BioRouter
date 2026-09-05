@@ -6690,8 +6690,7 @@ impl Agent {
         } else {
             None
         };
-        let dispatch =
-            self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
+        let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
         self.create_coding_agent_bridge_lease(
             session,
             dispatch,
@@ -9118,16 +9117,37 @@ impl Agent {
                     } else {
                         (None, None)
                     };
-                let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL
+                // The chat turn's provider call runs with this session in scope,
+                // so `RequestLog::start` can stamp `session_id` into the header
+                // line of `llm_request.*.jsonl`.
+                //
+                // ⚠ Without it that header is `null` for every desktop and CLI
+                // turn — measured, 49 of 49 files on the development machine —
+                // and `diagnostics::log_belongs_to_session` fails closed on an
+                // unattributable log. So the diagnostics bundle shipped ZERO log
+                // files while its own dialog promised "Recent log files", and
+                // the omission was silent because `collection-notes.txt` only
+                // reports collection *failures*. The scheduler and the subagent
+                // handler already scope their turns the same way; the interactive
+                // path was the one that did not.
+                //
+                // Placed on the awaited call, not around the returned stream:
+                // `RequestLog::start` sits at the top of every provider's
+                // `stream`/`complete` body, which is inside this await. The same
+                // reasoning is what makes the bridge-URL scope above correct.
+                let mut stream = crate::session_context::SESSION_ID
                     .scope(
-                        bridge_url,
-                        Self::stream_response_from_provider(
-                            iteration_provider,
-                            &system_prompt,
-                            conversation_with_moim.messages(),
-                            &tools,
-                            &toolshim_tools,
-                            live_steer_receiver,
+                        Some(session_config.id.clone()),
+                        coding_agent_bridge::ACTIVE_BRIDGE_URL.scope(
+                            bridge_url,
+                            Self::stream_response_from_provider(
+                                iteration_provider,
+                                &system_prompt,
+                                conversation_with_moim.messages(),
+                                &tools,
+                                &toolshim_tools,
+                                live_steer_receiver,
+                            ),
                         ),
                     )
                     .await?;
@@ -19522,6 +19542,150 @@ mod gate_b_turn_tests {
             !eager_compaction_in_flight(&agent, &s.id),
             "a public provider was handed a private transcript to summarise in \
              the background"
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_scope_tests {
+    //! The chat turn's provider call runs with the session in scope.
+    //!
+    //! ⚠ This is a *diagnostics* invariant, not a correctness one, which is
+    //! exactly why nothing caught it breaking. `RequestLog::start` stamps
+    //! `session_context::current_session_id()` into the first line of every
+    //! `llm_request.*.jsonl`, and `diagnostics::log_belongs_to_session` fails
+    //! closed on a log whose header names no session. The scheduler
+    //! (`scheduler.rs`) and the sub-agent handler both scoped their turns; the
+    //! interactive path never did. So every log written by a desktop or CLI
+    //! chat was unattributable, every one of them was excluded from the
+    //! diagnostics bundle, and the bundle said nothing about it — measured on
+    //! the development machine as 49 files out of 49.
+    //!
+    //! A turn works perfectly either way. The only observer is the log header,
+    //! so the only test that can fail is one that reads it — from inside the
+    //! provider, where `RequestLog::start` reads it.
+
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    /// Reads the session task-local from exactly where `RequestLog::start`
+    /// reads it: inside the provider's own completion body.
+    struct SessionSpyProvider {
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl Provider for SessionSpyProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("spy", "Spy", "", "spy-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "spy"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(crate::session_context::current_session_id());
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("spy-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("spy-model")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_turn_runs_its_provider_call_with_the_session_in_scope() {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                PathBuf::from("."),
+                "session-scope".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        agent
+            .update_provider(
+                Arc::new(SessionSpyProvider {
+                    seen: Arc::clone(&seen),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        // The task-local is unset outside a turn, so a test that only asserted
+        // "the id is right" would pass against a scope that never opened if the
+        // ambient value happened to match. It cannot here: there is none.
+        assert_eq!(crate::session_context::current_session_id(), None);
+
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("hi"),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(1),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        drop(stream);
+
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            !seen.is_empty(),
+            "the provider was never called, so this test proves nothing"
+        );
+        assert!(
+            seen.iter()
+                .all(|id| id.as_deref() == Some(session.id.as_str())),
+            "every provider call in a chat turn must see its own session id, \
+             or its request log cannot be attributed and the diagnostics bundle \
+             silently drops it; saw {seen:?} for session {}",
+            session.id
         );
     }
 }
