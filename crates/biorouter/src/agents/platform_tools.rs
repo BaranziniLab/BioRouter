@@ -97,11 +97,11 @@ pub struct PlatformToolGates {
     /// Workflow management is reachable.
     ///
     /// ⚠ Unconditionally true today, and the field exists anyway. Not
-    /// speculation: the alternative is a fifth `if` at the bottom of
+    /// speculation: the alternative is a sixth `if` at the bottom of
     /// `Agent::list_tools_for`, which is the exact shape issue #141 took — the
     /// roster and `code_execution`'s catalogue disagreeing because the same
     /// decision was written in two places. A condition added later belongs in
-    /// `Agent::platform_tool_gates` beside the other three, where every reader
+    /// `Agent::platform_tool_gates` beside the other four, where every reader
     /// of this struct already looks.
     ///
     /// Note this is NOT the approval gate. Whether a person can be asked is a
