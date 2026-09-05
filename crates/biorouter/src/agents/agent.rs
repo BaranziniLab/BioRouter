@@ -11678,7 +11678,18 @@ impl Agent {
             (instructions, activities)
         };
 
-        let extension_configs = self.get_extension_configs().await;
+        // Redacted for the same reason `workflow::service::session_enrichment`
+        // redacts: this document is returned to the model as tool content and
+        // written to a shareable file. `apply_session_enrichment` overwrites
+        // this set on the surfaces that call it, but a caller that does not —
+        // and the CLI was exactly that — must not be the one path that ships a
+        // live `Authorization` header to a provider.
+        let extension_configs: Vec<_> = self
+            .get_extension_configs()
+            .await
+            .into_iter()
+            .map(|config| config.redacted_for_session_export())
+            .collect();
 
         let author = Author {
             contact: std::env::var("USER")
