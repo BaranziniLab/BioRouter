@@ -4450,7 +4450,7 @@ impl Agent {
         // emits `RequireApproval`, never `Deny`, so the catastrophic denylist and
         // command policy engine remain the non-bypassable floor.
         tool_inspection_manager.add_inspector(Box::new(
-            crate::security::sensitive_ops::SensitiveOpsInspector,
+            crate::security::sensitive_ops::SensitiveOpsInspector::new(Arc::clone(&provider)),
         ));
 
         // Issue #63: route access to the machine-wide (global) memory store

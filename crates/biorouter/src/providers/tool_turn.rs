@@ -475,7 +475,7 @@ fn workflow_inspectors(tool_risks: Arc<ToolRiskRegistry>) -> ToolInspectionManag
     let mut manager = ToolInspectionManager::new();
     manager.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
     manager.add_inspector(Box::new(SecurityInspector::new()));
-    manager.add_inspector(Box::new(SensitiveOpsInspector));
+    manager.add_inspector(Box::new(SensitiveOpsInspector::unbound()));
     manager.add_inspector(Box::new(PermissionInspector::new(
         tool_risks,
         PermissionManager::instance(),
