@@ -870,3 +870,190 @@ mod knowledge_capture_tests {
         assert_eq!(captured.default.as_deref(), Some("beta"));
     }
 }
+
+/// The repo-wide guards that keep "one core" true.
+///
+/// Every assertion here is a grep over the real tree rather than over a fixture,
+/// because the failure being prevented is a *new call site* — something a
+/// fixture cannot contain by construction. Each one also fails loudly when it
+/// can read nothing, so a moved file turns the guard off with a failure rather
+/// than a vacuous pass.
+#[cfg(test)]
+mod one_core_guards {
+    use std::path::{Path, PathBuf};
+
+    fn crates_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/biorouter has a parent")
+            .to_path_buf()
+    }
+
+    /// Every `.rs` file in the workspace, with its path.
+    fn rust_sources() -> Vec<(PathBuf, String)> {
+        fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        out.push((path, text));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&crates_dir(), &mut out);
+        assert!(
+            out.len() > 100,
+            "the guard must not pass vacuously: only {} sources were read",
+            out.len()
+        );
+        out
+    }
+
+    /// Production halves only. A guard that also reads `#[cfg(test)]` code
+    /// counts a test's own fixture as a violation, and one that slices on the
+    /// first `#[cfg(test)]` truncates a file whose tests sit mid-way and then
+    /// misses everything after them. Splitting on the LAST occurrence keeps the
+    /// whole production body in view in both layouts.
+    fn production(text: &str) -> String {
+        let body = match text.rfind("#[cfg(test)]") {
+            Some(idx) => &text[..idx],
+            None => text,
+        };
+        // Comments are dropped, and that is not cosmetic: every one of these
+        // guards forbids a pattern, so the prose explaining WHY it is forbidden
+        // names it — and a guard that reads its own rationale as a violation
+        // reports the fix as the bug. Both of these fired on their own doc
+        // comments before this line existed.
+        body.lines()
+            .map(|line| match line.find("//") {
+                Some(idx) => &line[..idx],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rel(path: &Path) -> String {
+        path.strip_prefix(crates_dir())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    /// A generated workflow's `extensions` are written in ONE place.
+    ///
+    /// The HTTP route used to set this field inline while the CLI, running the
+    /// same generator over the same conversation, set nothing — the divergence
+    /// this module exists to end. A second assignment is how it comes back.
+    #[test]
+    fn only_the_core_writes_a_generated_workflows_extensions() {
+        let offenders: Vec<String> = rust_sources()
+            .into_iter()
+            .filter(|(path, _)| !rel(path).ends_with("workflow/service.rs"))
+            .filter(|(_, text)| production(text).contains("workflow.extensions = Some("))
+            .map(|(path, _)| rel(&path))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "`workflow.extensions` must only be set by \
+             `workflow::service::apply_session_enrichment`; also set in: {offenders:?}"
+        );
+    }
+
+    /// `save_workflow_to_file` is the physical writer, and only the core may
+    /// call it.
+    ///
+    /// Everything a caller wants around a save — validation, the library
+    /// directory, the de-dup filename, cache invalidation — lives in
+    /// [`super::save`]. The CLI called the writer directly (in fact it did not
+    /// even do that: it called `serde_yaml::to_writer`) and got none of it.
+    #[test]
+    fn only_the_core_calls_the_physical_workflow_writer() {
+        let sources = rust_sources();
+        let definition_seen = sources
+            .iter()
+            .any(|(path, _)| rel(path).ends_with("workflow/local_workflows.rs"));
+        assert!(
+            definition_seen,
+            "the guard must not pass vacuously: local_workflows.rs was not read"
+        );
+
+        let offenders: Vec<String> = sources
+            .into_iter()
+            .filter(|(path, _)| {
+                let rel = rel(path);
+                !rel.ends_with("workflow/service.rs")
+                    && !rel.ends_with("workflow/local_workflows.rs")
+            })
+            .filter(|(_, text)| production(text).contains("save_workflow_to_file("))
+            .map(|(path, _)| rel(&path))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "workflows are written through `workflow::service::save`; \
+             `save_workflow_to_file` is also called in: {offenders:?}"
+        );
+    }
+
+    /// No surface may serialize a workflow straight to a file handle.
+    ///
+    /// This is the shape the CLI's save actually had, and it is invisible to the
+    /// guard above because it never names the writer at all.
+    #[test]
+    fn no_surface_serializes_a_workflow_directly_to_a_file() {
+        let offenders: Vec<String> = rust_sources()
+            .into_iter()
+            .filter(|(_, text)| {
+                let production = production(text);
+                production.contains("serde_yaml::to_writer")
+                    && production.to_lowercase().contains("workflow")
+            })
+            .map(|(path, _)| rel(&path))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a workflow must be written through `workflow::service::save`, which \
+             validates it and applies the block-scalar formatting; direct \
+             serialization in: {offenders:?}"
+        );
+    }
+
+    /// Every surface that starts a workflow installs it the same way.
+    ///
+    /// `prepare_prompt` is what inlines a workflow's declared skills and renders
+    /// its instructions; `install_prepared` is what applies its knowledge
+    /// selection. A surface that reads `workflow.instructions` and hands it
+    /// straight to the model has silently dropped both `skills:` and
+    /// `knowledge_bases:` — which is exactly what `biorouter run --workflow`
+    /// did.
+    #[test]
+    fn every_surface_that_runs_a_workflow_goes_through_the_shared_install() {
+        let sources = rust_sources();
+        let installers: Vec<String> = sources
+            .iter()
+            .filter(|(_, text)| production(text).contains("runtime::install_prepared"))
+            .map(|(path, _)| rel(path))
+            .collect();
+
+        for expected in [
+            "biorouter/src/scheduler.rs",
+            "biorouter-cli/src/session/builder.rs",
+        ] {
+            assert!(
+                installers.iter().any(|found| found.ends_with(expected)),
+                "{expected} must install a workflow through \
+                 `runtime::install_prepared`; installers found: {installers:?}"
+            );
+        }
+    }
+}

@@ -141,6 +141,34 @@ pub async fn apply_prepared_to_agent(
     agent.set_session_context_prompt(prompt).await;
 }
 
+/// Install a workflow into the session about to run it: its knowledge
+/// selection, its components, and the prompt [`prepare_prompt`] already
+/// resolved.
+///
+/// ⚠ Takes an ALREADY-PREPARED prompt rather than calling `prepare_prompt`
+/// itself, and that split is load-bearing. `prepare_prompt` is the fallible
+/// half — it resolves declared skills and errors when one is missing or
+/// disabled — so a caller that persists the workflow to its session row runs it
+/// *before* the persist, and a workflow naming a skill that is not installed
+/// fails without leaving a half-armed session behind. Collapsing the two would
+/// persist first and fail second.
+///
+/// Every headless surface that starts a workflow comes here. The CLI did not,
+/// which is why `biorouter run --workflow` silently ignored `skills:` and
+/// `knowledge_bases:` while the desktop and the scheduler honoured both.
+pub async fn install_prepared(
+    agent: &Agent,
+    session_id: &str,
+    workflow: &Workflow,
+    include_final_output_tool: bool,
+    prompt: Option<String>,
+) -> Result<()> {
+    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()?;
+    apply_knowledge_selection(&knowledge, session_id, workflow)?;
+    apply_prepared_to_agent(agent, workflow, include_final_output_tool, prompt).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
