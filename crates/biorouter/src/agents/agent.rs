@@ -34,6 +34,7 @@ use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
     PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_REPORT_BUG_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
@@ -6516,6 +6517,15 @@ impl Agent {
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                // The bug reporter is dispatched only by `Agent::dispatch_tool_call`.
+                // `ChatBridgeDispatch::dispatch` routes the two ingest tools by
+                // name and hands everything else to the extension manager, which
+                // has never heard of a `platform__*` tool — so bridging this one
+                // would advertise a call that resolves to `Tool not found` after
+                // the child has already written a report. Giving a coding-agent
+                // child its own route is a deliberate addition, not an omission
+                // to be fixed by deleting this line.
+                || name == crate::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
             let target_enabled = targets.iter().any(|target| {
@@ -6801,6 +6811,33 @@ impl Agent {
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let result = self.handle_read_session_blob(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
+        // The agent-callable bug reporter. Dispatched here rather than as an
+        // extension for the reason `platform__ingest_source` is: it needs the
+        // session row and the session manager, which the extension manager has
+        // no access to. Its `file` half parks on a proof-backed approval, so it
+        // is advertised only where a person can be asked (see
+        // `PlatformToolGates::bug_report`).
+        if tool_call.name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = crate::agents::bug_report::handle_report_bug(
+                arguments,
+                session,
+                Arc::clone(&self.config.session_manager),
+                cancellation_token.clone(),
+            )
+            .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -7464,13 +7501,14 @@ impl Agent {
             .await
     }
 
-    /// The three gates that decide which `platform__*` tools this agent offers
-    /// — sampled HERE, once, and passed to
+    /// The gates that decide which `platform__*` tools this agent offers —
+    /// sampled HERE, once, and passed to
     /// [`platform_tools::PlatformToolGates::tools`].
     ///
-    /// This is the only place that can read all three: the scheduler handle and
-    /// the Knowledge capability are per-agent state, and the blob flag is a
-    /// process-global that a gate must never re-read for itself.
+    /// This is the only place that can read all of them: the scheduler handle
+    /// and the Knowledge capability are per-agent state, and the blob and
+    /// user-proof flags are process-globals a gate must never re-read for
+    /// itself.
     ///
     /// It has exactly ONE caller today — [`Agent::list_tools_for`]. That is not
     /// a claim that other readers exist and agree; it is the rule for the next
@@ -7490,6 +7528,11 @@ impl Agent {
                 .await,
             // BR-7: the retrieval half of externalized tool results.
             session_blobs: message_blobs::lazy_load_enabled(),
+            // Filing parks on a proof-backed approval, which a daemon holding
+            // no proof-of-user key can never grant. Sampled here, once, for the
+            // reason every other gate is: a process-global read inside the gate
+            // itself is a second read the value could change between.
+            bug_report: crate::pending_user_action::user_proof_available(),
         }
     }
 
@@ -11956,10 +11999,10 @@ mod tests {
     }
 
     /// The gates each still decide their own tool, and the `extension_name`
-    /// scope still applies to all four. Catches an assembly that ORs the gates
+    /// scope still applies to every one. Catches an assembly that ORs the gates
     /// (a session with only Knowledge would gain the scheduler tool) and one
     /// that drops the scope filter (`list_tools(Some("developer"))` would grow
-    /// four tools that do not belong to Developer).
+    /// tools that do not belong to Developer).
     #[test]
     fn each_platform_tool_tracks_its_own_gate_and_the_listing_scope() {
         use platform_tools::PlatformToolGates;
@@ -11974,11 +12017,13 @@ mod tests {
             scheduler: true,
             knowledge: true,
             session_blobs: true,
+            bug_report: true,
         };
         let none = PlatformToolGates {
             scheduler: false,
             knowledge: false,
             session_blobs: false,
+            bug_report: false,
         };
 
         assert_eq!(
@@ -12022,6 +12067,44 @@ mod tests {
             ),
             vec![PLATFORM_READ_SESSION_BLOB_TOOL_NAME]
         );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    bug_report: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_REPORT_BUG_TOOL_NAME]
+        );
+    }
+
+    /// ⚠ On a daemon that cannot obtain a person's proof, the bug reporter is
+    /// WITHHELD -- both halves, including the read-only analysis.
+    ///
+    /// `biorouter serve` spawns its daemon with `Stdio::null()` and therefore
+    /// holds no proof-of-user key, so the approval the file half parks on
+    /// refuses forever. A tool advertised there would let the model produce a
+    /// finished report and then discover it has nowhere to put it, which is the
+    /// exact failure `install_extension`'s `can_ask_a_person` gate exists to
+    /// prevent -- and the failure is worse here, because the report is written
+    /// before the refusal is met.
+    #[test]
+    fn the_bug_reporter_is_withheld_where_no_person_can_approve_it() {
+        use platform_tools::PlatformToolGates;
+        let offered = |bug_report: bool| {
+            PlatformToolGates {
+                scheduler: true,
+                knowledge: true,
+                session_blobs: true,
+                bug_report,
+            }
+            .tools(None)
+            .into_iter()
+            .any(|tool| tool.name == PLATFORM_REPORT_BUG_TOOL_NAME)
+        };
+        assert!(offered(true));
+        assert!(!offered(false));
     }
 
     #[test]
@@ -15644,7 +15727,7 @@ mod tests {
         running.abort();
     }
 
-    /// Issue #141: the four Agent-dispatched `platform__*` tools were reachable
+    /// Issue #141: the Agent-dispatched `platform__*` tools were reachable
     /// from NOWHERE once Code Execution was on.
     ///
     /// Code Execution mode collapses the model's directly-callable list to
