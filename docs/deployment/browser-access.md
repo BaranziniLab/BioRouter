@@ -235,6 +235,7 @@ cd ui/desktop && npm run build:web
 
 ## Related documentation
 
+- [Reaching a private chat from a script](programmatic-session-access.md) — the `X-Caller-Provider` header, for automation that must read or follow a private conversation over the API.
 - [Headless Linux deployment](headless-linux.md) — running this as a long-lived service on a Linux server.
 - [Decisions behind `biorouter serve`](serve-decisions.md) — why the browser session is shaped this way.
 - [How browser-served Biorouter is built](serve-architecture.md) — the architecture, for developers.

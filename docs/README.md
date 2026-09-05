@@ -27,6 +27,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
 | Run several conversations at once, or delegate to a subagent you can watch | [Workspace control](agent-loop/workspace-control.md) |
 | Use Biorouter in a web browser, on your own machine or a shared host | [Reaching Biorouter from a browser](deployment/browser-access.md) — then [Headless Linux deployment](deployment/headless-linux.md) if it should run as a server |
+| Read or follow a **private** chat from a script, a dashboard or CI | [Reaching a private chat from a script](deployment/programmatic-session-access.md) — the `X-Caller-Provider` header, and which routes honour it |
 | Fix an error you are hitting right now | [Common problems and fixes](troubleshooting/common-problems-and-fixes.md) |
 | Understand the codebase before changing it | [System overview](architecture/system-overview.md) |
 

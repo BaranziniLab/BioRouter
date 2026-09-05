@@ -193,6 +193,7 @@ it finds none, the error names every path it tried.
 
 ## Related documentation
 
+- [Reaching a private chat from a script](programmatic-session-access.md) — what `X-Secret-Key` does *not* prove, and the capability header a private session additionally requires.
 - [Decisions behind `biorouter serve`](serve-decisions.md) — why each of the above was chosen.
 - [Browser access](browser-access.md) — using the command.
 - [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
