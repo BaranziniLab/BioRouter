@@ -358,10 +358,51 @@ fn remove_matching_extension(
     key: &str,
     expected: &ExtensionEntry,
 ) -> Option<ExtensionEntry> {
-    let matches = extensions.get(key).is_some_and(|current| {
+    let stored_key = stored_key_of(extensions, key, expected)?;
+    extensions.shift_remove(&stored_key)
+}
+
+/// Which map key actually holds `expected`, when any does.
+///
+/// ⚠ **A map key is not derived from the name, and the uninstall doors hold a
+/// derived one.** Every writer in this process keys an entry by
+/// `config.key()` — `name_to_key(config.name())` — but a `config.yaml` an
+/// operator wrote by hand keeps whatever key they typed; [`find_entry_by_name`]
+/// exists precisely because "map keys are not names". A caller that resolved an
+/// entry BY NAME therefore holds a key the stored mapping may not use, and
+/// looking the entry up by that key alone silently finds nothing: the uninstall
+/// then reports "the extension configuration changed before deletion" for a
+/// hand-added MCP server that changed not at all, and the entry survives — the
+/// one case `remove_extension` exists for.
+///
+/// Three arms, narrowest first. The exact key still wins, so a mapping this
+/// process wrote resolves without a scan and cannot be re-pointed by the arms
+/// below it. Then a stored key that differs only in case or whitespace, in
+/// EITHER direction (`name_to_key` is idempotent, so the requested key is
+/// reduced too and a raw key requested against a normalized stored one resolves
+/// as well). Then the entry itself, which is the identity the caller validated
+/// and the only thing that can find an arbitrary hand-written key.
+///
+/// ⚠ **Every arm stays guarded by whole-entry equality**, so this widens which
+/// KEY is looked at and never which ENTRY may be deleted: a concurrent
+/// replacement is left alone exactly as before.
+fn stored_key_of(
+    extensions: &IndexMap<String, ExtensionEntry>,
+    key: &str,
+    expected: &ExtensionEntry,
+) -> Option<String> {
+    let matches = |current: &ExtensionEntry| {
         current.enabled == expected.enabled && current.config == expected.config
-    });
-    matches.then(|| extensions.shift_remove(key)).flatten()
+    };
+    if extensions.get(key).is_some_and(matches) {
+        return Some(key.to_owned());
+    }
+    let normalized = name_to_key(key);
+    extensions
+        .iter()
+        .find(|(stored, current)| name_to_key(stored.as_str()) == normalized && matches(current))
+        .or_else(|| extensions.iter().find(|(_, current)| matches(current)))
+        .map(|(stored, _)| stored.clone())
 }
 
 /// Restore a removed entry only when no concurrent writer has already filled
@@ -535,6 +576,55 @@ mod persisted_provenance_tests {
             approved.clone(),
         ));
         assert_eq!(extensions.get("package").unwrap().config, approved.config);
+    }
+
+    /// ⚠ **The uninstall doors hold `name_to_key(<installed name>)`; the stored
+    /// mapping holds whatever the operator typed.** A hand-written
+    /// `config.yaml` key need not be derived from the entry's name at all —
+    /// `persisted_names_reflect_only_entries_written_to_the_config_file` pins
+    /// that "map keys are not names" — so a lookup by the derived key alone
+    /// finds nothing and the removal reports a configuration that "changed"
+    /// while it sat untouched. That is exactly the extension `remove_extension`
+    /// was written for.
+    #[test]
+    fn conditional_removal_finds_a_hand_written_key_that_is_not_the_normalized_name() {
+        let entry = stdio_entry("custom name", "run-me");
+        let derived_key = name_to_key(&entry.config.name());
+        assert_ne!(derived_key, "custom-key", "the fixture must diverge");
+
+        // The headline case: an arbitrary hand-written key.
+        let mut extensions = IndexMap::from([("custom-key".to_owned(), entry.clone())]);
+        assert_eq!(
+            remove_matching_extension(&mut extensions, &derived_key, &entry),
+            Some(entry.clone()),
+        );
+        assert!(extensions.is_empty());
+
+        // A key that differs only in case and whitespace, and the reverse —
+        // a raw spelling requested against a normalized stored key.
+        let mut extensions = IndexMap::from([("Custom Name".to_owned(), entry.clone())]);
+        assert!(remove_matching_extension(&mut extensions, &derived_key, &entry).is_some());
+        let mut extensions = IndexMap::from([(derived_key.clone(), entry.clone())]);
+        assert!(remove_matching_extension(&mut extensions, "Custom Name", &entry).is_some());
+
+        // The exact key still wins over both fallbacks, so a mapping this
+        // process wrote cannot be re-pointed at a neighbour by them.
+        let other = stdio_entry("custom name", "different-command");
+        let mut extensions = IndexMap::from([
+            ("aardvark".to_owned(), other.clone()),
+            (derived_key.clone(), entry.clone()),
+        ]);
+        assert_eq!(
+            remove_matching_extension(&mut extensions, &derived_key, &entry),
+            Some(entry.clone()),
+        );
+        assert_eq!(extensions.get("aardvark"), Some(&other));
+
+        // …and widening the KEY search must not widen which ENTRY may go: a
+        // replacement under a hand-written key is still left alone.
+        let mut extensions = IndexMap::from([("custom-key".to_owned(), other.clone())]);
+        assert!(remove_matching_extension(&mut extensions, &derived_key, &entry).is_none());
+        assert_eq!(extensions.get("custom-key"), Some(&other));
     }
 
     // #42: provenance must come from the raw persisted mapping, not the

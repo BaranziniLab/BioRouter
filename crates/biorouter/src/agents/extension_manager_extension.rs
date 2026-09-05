@@ -2162,8 +2162,10 @@ impl ExtensionManagerClient {
                 sideloaded .brxt or an MCP server configured by hand — naming it by its exact installed
                 name; delete_extension_package cannot name one at all, and neither tool is a reason to
                 edit config.yaml or the provenance store yourself. It removes the configuration entry,
-                the package directory and its bundled skills, detaches the extension from every chat
-                that had it, and preserves shared credentials.
+                the package directory and its bundled skills, detaches the extension from this chat,
+                clears it from the saved rosters of other chats so reopening one does not relaunch it,
+                and preserves shared credentials. Another chat already running keeps the extension
+                loaded until it is reopened.
                 Use list_resources and read_resource only when they appear in the current tool catalog;
                 they are omitted when no loaded extension supports resources.
             "#}.to_string()),
@@ -3748,6 +3750,18 @@ mod tests {
         assert!(instructions.contains("remove_extension"));
         assert!(instructions.contains("did not come from the marketplace"));
         assert!(instructions.contains("edit config.yaml"));
+
+        // ⚠ What the removal actually reaches is THIS chat's live manager plus
+        // the SAVED rosters of the others (`prune_extension_from_sessions`); a
+        // chat already running keeps the extension loaded in memory until it is
+        // reopened. The instructions claimed "every chat that had it", and an
+        // overclaim here is one the model repeats to the user as a fact.
+        assert!(
+            !instructions.contains("every chat that had it"),
+            "the instructions promise a detach the removal does not perform"
+        );
+        assert!(instructions.contains("detaches the extension from this chat"));
+        assert!(instructions.contains("saved rosters of other chats"));
     }
 
     fn package_entry(name: &str, install_dir: &std::path::Path) -> ExtensionEntry {
@@ -4052,14 +4066,47 @@ mod tests {
         extension_name: String,
         install_dir: PathBuf,
         skill_slug: String,
+        /// The `config.yaml` map key the entry really sits under, once
+        /// [`RemovalFixture::rekey_by_hand`] has moved it off the derived one.
+        hand_written_key: Option<String>,
     }
 
     impl Drop for RemovalFixture {
         fn drop(&mut self) {
             crate::config::extensions::remove_extension(&self.config_key);
+            if let Some(hand_written) = &self.hand_written_key {
+                crate::config::extensions::remove_extension(hand_written);
+            }
             if self.install_dir.exists() {
                 let _ = std::fs::remove_dir_all(&self.install_dir);
             }
+        }
+    }
+
+    impl RemovalFixture {
+        /// Move the entry to a map key an operator typed, which need not be
+        /// derived from the entry's name at all — the state an MCP server added
+        /// to `config.yaml` by hand is in, and the one every writer in this
+        /// process is incapable of producing (they all key by `config.key()`).
+        fn rekey_by_hand(&mut self) -> String {
+            let hand_written = format!("hand-written-{}", uuid::Uuid::new_v4().simple());
+            let entry =
+                crate::config::extensions::get_extension_entry_by_name(&self.extension_name)
+                    .expect("the fixture entry is configured");
+            // The literal is `EXTENSIONS_CONFIG_KEY`, which is private to
+            // `config::extensions`; nothing else in this process writes a map
+            // key by hand, so there is no helper to borrow.
+            crate::config::Config::global()
+                .update_param::<indexmap::IndexMap<String, ExtensionEntry>, _, _>(
+                    "extensions",
+                    |extensions| {
+                        extensions.shift_remove(&self.config_key);
+                        extensions.insert(hand_written.clone(), entry);
+                    },
+                )
+                .expect("the fixture config is writable");
+            self.hand_written_key = Some(hand_written.clone());
+            hand_written
         }
     }
 
@@ -4088,6 +4135,7 @@ mod tests {
             extension_name,
             install_dir,
             skill_slug,
+            hand_written_key: None,
         }
     }
 
@@ -4183,6 +4231,54 @@ mod tests {
 
         assert!(!fixture.install_dir.exists());
         assert!(get_extension_entry_by_name(&fixture.extension_name).is_none());
+        assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+    }
+
+    /// ⚠ **The headline case, and the one every fixture above routes around.**
+    /// An extension is resolved here BY NAME, so the plan carries
+    /// `name_to_key(<installed name>)` — but the `config.yaml` mapping keys an
+    /// entry by whatever the operator typed, and "map keys are not names".
+    /// `remove_extension_if_matches` looking that entry up by the derived key
+    /// alone found nothing, answered "the extension configuration changed
+    /// before deletion", rolled the whole uninstall back and left the server
+    /// configured: the tool silently failed on exactly the extension it exists
+    /// for, an MCP server added to `config.yaml` by hand.
+    ///
+    /// Every other removal fixture goes through `set_extension`, which keys by
+    /// `config.key()` — so none of them can ever be in the state under test.
+    #[tokio::test]
+    async fn approved_removal_uninstalls_an_extension_whose_config_key_was_written_by_hand() {
+        let _path_root = pinned_path_root();
+        let mut fixture = install_sideloaded_fixture("HandKeyed");
+        let hand_written = fixture.rekey_by_hand();
+        assert_ne!(hand_written, fixture.config_key);
+        assert!(
+            get_extension_entry_by_name(&fixture.extension_name).is_some(),
+            "the entry must still be configured under its hand-written key"
+        );
+        let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
+        let session_id = format!("remove-hand-keyed-{}", uuid::Uuid::new_v4());
+
+        let result = run_approved_uninstall(
+            Arc::new(client),
+            session_id,
+            REMOVE_EXTENSION_TOOL_NAME,
+            serde_json::json!({ "extension_name": fixture.extension_name.clone() }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "removed");
+        assert_eq!(report["results"][0]["status"], "removed");
+        assert_eq!(report["results"][0]["configurationRemoved"], true);
+        assert_eq!(report["results"][0]["installDirectoryRemoved"], true);
+
+        assert!(!fixture.install_dir.exists());
+        assert!(
+            get_extension_entry_by_name(&fixture.extension_name).is_none(),
+            "the hand-keyed entry survived the removal that reported success"
+        );
         assert!(!manager.is_extension_enabled(&fixture.config_key).await);
     }
 
