@@ -398,14 +398,26 @@ pub fn described_problem(recent_user_messages: &[String]) -> Option<String> {
 
     // Longest phrase first, so "report a bug to biorouter" is not consumed as
     // "report a bug" leaving " to biorouter" behind.
+    //
+    // ⚠ `get(cut..)`, not `[cut..]`. The offset is computed against `lowered`
+    // and applied to `trimmed`, which is sound today only because
+    // `to_ascii_lowercase` is byte-for-byte and every trigger phrase is ASCII —
+    // two facts a later edit can break without touching this line. This runs on
+    // whatever the user typed, so the failure mode of getting it wrong is a
+    // panic in the middle of their turn. A `None` here simply means no phrase
+    // was stripped.
     let mut best = trimmed;
     for phrase in TRIGGER_PHRASES {
-        if let Some(rest) = lowered.strip_prefix(phrase) {
-            let cut = trimmed.len() - rest.len();
-            let candidate = trimmed[cut..].trim_start_matches([':', ',', '-', '—', '.', ' ']);
-            if candidate.len() < best.len() {
-                best = candidate;
-            }
+        let Some(rest) = lowered.strip_prefix(phrase) else {
+            continue;
+        };
+        let cut = trimmed.len().saturating_sub(rest.len());
+        let Some(candidate) = trimmed.get(cut..) else {
+            continue;
+        };
+        let candidate = candidate.trim_start_matches([':', ',', '-', '—', '.', ' ']);
+        if candidate.len() < best.len() {
+            best = candidate;
         }
     }
 
@@ -795,6 +807,25 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(described, "the sidebar will not resize below 1200 pixels");
+    }
+
+    /// ⚠ Arbitrary user text, including non-ASCII, must not panic.
+    ///
+    /// The offset is computed against an ASCII-lowercased copy and applied to
+    /// the original. That is sound only while every trigger phrase is ASCII and
+    /// the lowercasing is byte-for-byte, and this runs on whatever the user
+    /// typed — so getting it wrong panics mid-turn rather than misreporting.
+    #[test]
+    fn multibyte_prose_is_handled_without_panicking() {
+        for text in [
+            "报告一个错误：图表面板是空白的，当数据集只有一行时。",
+            "Report a bug: le panneau d'artefact est complètement vide — j'attendais un graphique.",
+            "report a bug — 🐛 the artifact panel renders blank for one-row datasets",
+            "RÉPORT A BUG: something went wrong in a way that is quite long indeed",
+        ] {
+            // The assertion is that this returns at all.
+            let _ = described_problem(&[text.to_string()]);
+        }
     }
 
     /// A bare trigger carries nothing, and must still produce the question.

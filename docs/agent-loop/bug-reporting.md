@@ -124,10 +124,36 @@ changed between the card and the click, then act.
   proof-of-user key, so the approval refuses forever there. Both halves are withheld,
   including the read-only analysis: a tool that lets the model write a whole report and
   *then* discover it has nowhere to put it is worse than one that is absent.
-- **It is not bridged to a coding-agent child.** `ChatBridgeDispatch` routes the two ingest
-  tools by name and hands everything else to the extension manager, which has never heard
-  of a `platform__*` tool. Bridging it would advertise a call that resolves to
-  `Tool not found` after the child had already written a report.
+
+## Coding-agent children
+
+It **is** available to a coding-agent child (Claude Code, Codex). That took a dispatch arm
+of its own: `ChatBridgeDispatch` routes tools by name and hands everything it does not
+recognise to the extension manager, which has never heard of a `platform__*` tool, so a
+bridged platform tool without an arm answers `Tool not found` — after the child has already
+written a whole report. Three things make it work, and each is a place the next platform
+tool will need too:
+
+- `dispatch_report_bug`, beside its two ingest siblings in `ChatBridgeDispatch`.
+- A `bug_report` flag on `CodingAgentBridgePlan`, **not** a capability target. Every other
+  bridged tool is reached through a bundled capability or an installed extension, and
+  `enforce_tool_access` re-checks that grant at dispatch — but filing a bug belongs to no
+  extension and is not something the user switches off in Settings. Its one gate is
+  `user_proof_available()`, the same as in the main roster. Riding on the Knowledge target,
+  which is how the two ingest tools travel, would mean a chat without a knowledge base
+  cannot report a bug.
+- An explicit arm in `enforce_tool_access` before the grant lookup, because a tool with no
+  grant would otherwise fall through to "not in this turn's coding-agent bridge".
+
+⚠ Adding a name to the bridge's roster is a security-surface change: that allowlist is
+described in the code as "the reviewed builtin router rosters" and deserves a human look
+rather than a silent edit. Two things bound the risk here. The child reaches the tool over
+the same relay every other bridged tool uses, so it still runs behind Biorouter's
+inspectors, permission mode and privacy gates; and the approval still has to reach a
+person — on a coding-agent turn the child is blocked on `POST /tool_bridge/{nonce}`, which
+is parked on the card, so `next_provider_wake` is what surfaces it (the #107 mechanism).
+Both coding-agent providers are also `ProviderTier::Public`, so Gate A has already refused
+to bind one to a private chat and the private-session refusal cannot fire on that path.
 
 ## Reaching GitHub
 

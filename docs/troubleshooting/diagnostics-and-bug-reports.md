@@ -121,6 +121,8 @@ Two things it will not do:
 - **It will not file from a chat classified private.** A GitHub issue is public and permanent, and a private chat has touched a private model or a private data source. It writes the report, hands it to you, and stops. File it yourself once you have read it — and for genuinely private material, prefer a private channel over the public tracker.
 - **It will not treat a deliberate refusal as a bug.** If biorouter refused something on purpose — a privacy boundary, a permission decision — it says so instead of filing "the security boundary worked" as a defect. Tell it if you think the *wrong* thing was refused.
 
+This works in a Claude Code or Codex chat too — the reporter is bridged to those, so you can ask for it there in the same words.
+
 If the reporter is not offered in your chat, biorouter is running somewhere it cannot ask you to approve a publication — `biorouter serve` in a browser, for one. Use the manual flow below.
 
 ## Reporting bugs and requesting features yourself

@@ -864,6 +864,19 @@ pub(super) struct CodingAgentBridgePlan {
     targets: Vec<CodingAgentBridgeTarget>,
     extension_targets: Vec<CodingAgentBridgeExtensionTarget>,
     pub(super) delegation_available: bool,
+    /// The bug reporter is on this turn's bridge.
+    ///
+    /// ⚠ A flag rather than a target, because the reporter belongs to no
+    /// extension. Every other bridged tool is reached through a
+    /// `CodingAgentBridgeTarget` (a bundled capability) or a
+    /// `CodingAgentBridgeExtensionTarget`, and `enforce_tool_access` re-checks
+    /// that grant at dispatch. Filing a bug is not a capability the user can
+    /// switch off in Settings — its one gate is whether a person can be asked
+    /// to approve the publication at all, exactly as in the main roster
+    /// (`PlatformToolGates::bug_report`). Hanging it off the Knowledge target,
+    /// which is how the two ingest tools ride, would gate bug reporting on a
+    /// knowledge base.
+    bug_report: bool,
 }
 
 impl CodingAgentBridgePlan {
@@ -1178,6 +1191,12 @@ fn coding_agent_bridge_policy_allows_tool(tool_name: &str) -> bool {
         .iter()
         .any(|policy| policy.tools.contains(&tool_name))
         || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name)
+        // ⚠ Deliberately NOT added to `CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS`.
+        // That list is consulted by `target_for_tool`, which matches it only
+        // under the **knowledge** target — right for the two ingest tools,
+        // which write to a knowledge base, and wrong here: it would mean a chat
+        // without Knowledge enabled cannot report a bug.
+        || tool_name == PLATFORM_REPORT_BUG_TOOL_NAME
 }
 
 struct BridgedChildExtensionGrant<'a> {
@@ -1485,6 +1504,21 @@ impl ChatBridgeDispatch {
             );
         }
         let name = call.name.as_ref();
+        // ⚠ Before the grant lookup, because the reporter has no grant to find:
+        // it belongs to no capability, so `target_for_tool` returns `None` and
+        // the `else` below would refuse it as "not in this turn's bridge". Its
+        // re-check is the same flag the plan was built from, so a child that
+        // was offered the tool on a daemon that could ask a person cannot use
+        // it on one that cannot.
+        if name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            return if self.plan.bug_report {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Tool '{name}' is not in this turn's coding-agent bridge"
+                ))
+            };
+        }
         if let Some(grant) = self.plan.target_for_tool(name) {
             if !self
                 .extensions
@@ -1606,6 +1640,60 @@ impl ChatBridgeDispatch {
             Some(cancel),
             capability,
             Some(Arc::clone(&self.ingest_provider)),
+        )
+        .await
+        {
+            Ok(content) => Ok(CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            Err(error) => Ok(CallToolResult {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        }
+    }
+
+    /// The bug reporter, for a coding-agent child.
+    ///
+    /// Modelled on [`Self::dispatch_ingest_conversation`] and here for the same
+    /// structural reason: `ChatBridgeDispatch::dispatch` hands everything it
+    /// does not route by name to the `ExtensionManager`, which has never heard
+    /// of a `platform__*` tool, so a bridged platform tool without an arm here
+    /// answers `Tool not found` — after the child has already written a whole
+    /// report.
+    ///
+    /// It takes no `CallCapability`. The handler's own privacy gate reads the
+    /// SESSION's classification rather than the caller's, which is the stronger
+    /// of the two and the right one for a question about publishing a chat's
+    /// contents. On this path the distinction is moot anyway: both coding-agent
+    /// providers are `ProviderTier::Public`, so Gate A has already refused to
+    /// bind one to a private chat.
+    async fn dispatch_report_bug(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.as_ref();
+        let session = self
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
+        let arguments = call
+            .arguments
+            .map(Value::Object)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        match crate::agents::bug_report::handle_report_bug(
+            arguments,
+            &session,
+            Arc::clone(&self.session_manager),
+            Some(cancel),
         )
         .await
         {
@@ -1812,6 +1900,9 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
             return self
                 .dispatch_ingest_conversation(session_id, call, capability, cancel)
                 .await;
+        }
+        if name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            return self.dispatch_report_bug(session_id, call, cancel).await;
         }
 
         let mutation = tool_catalog_mutation(&name);
@@ -6517,6 +6608,7 @@ impl Agent {
         &self,
         tools: &[Tool],
         delegation_available: bool,
+        bug_report_available: bool,
         targets: &[CodingAgentBridgeTarget],
         extension_targets: &[CodingAgentBridgeExtensionTarget],
     ) -> Vec<Tool> {
@@ -6530,24 +6622,26 @@ impl Agent {
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
-                // The bug reporter is dispatched only by `Agent::dispatch_tool_call`.
-                // `ChatBridgeDispatch::dispatch` routes the two ingest tools by
-                // name and hands everything else to the extension manager, which
-                // has never heard of a `platform__*` tool — so bridging this one
-                // would advertise a call that resolves to `Tool not found` after
-                // the child has already written a report. Giving a coding-agent
-                // child its own route is a deliberate addition, not an omission
-                // to be fixed by deleting this line.
-                || name == crate::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
-            let target_enabled = targets.iter().any(|target| {
-                target.tools.contains(&name)
-                    || (target.target.key() == "knowledge"
-                        && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
-            }) || extension_targets
-                .iter()
-                .any(|target| target.tools.iter().any(|tool| tool == name));
+            // ⚠ The bug reporter's gate is NOT a capability being enabled. It
+            // belongs to no extension, so there is no target to hang it off,
+            // and its one precondition is that a person can be asked to approve
+            // the publication — the same `user_proof_available()` that decides
+            // whether the main roster offers it. Riding on the Knowledge target
+            // like the two ingest tools would mean a chat without a knowledge
+            // base cannot report a bug.
+            let bug_report_tool =
+                name == crate::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME;
+            let target_enabled = bug_report_tool
+                || targets.iter().any(|target| {
+                    target.tools.contains(&name)
+                        || (target.target.key() == "knowledge"
+                            && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
+                })
+                || extension_targets
+                    .iter()
+                    .any(|target| target.tools.iter().any(|tool| tool == name));
             let policy_allows = coding_agent_bridge_policy_allows_tool(name)
                 || extension_targets
                     .iter()
@@ -6557,6 +6651,7 @@ impl Agent {
                 && policy_allows
                 && target_enabled
                 && (!delegation_tool || delegation_available)
+                && (!bug_report_tool || bug_report_available)
                 && seen.insert(name.to_string())
             {
                 bridged.push(prepare_coding_agent_bridge_tool(tool));
@@ -6621,11 +6716,21 @@ impl Agent {
             bridge_candidates.push(platform_tools::ingest_conversation_tool());
             bridge_candidates.push(platform_tools::ingest_source_tool());
         }
+        // The reporter is an Agent-owned tool, so it is not in `tools` (which is
+        // the model's own roster, already filtered) unless the main gate offered
+        // it. Push it as a candidate on the same condition the main roster uses,
+        // and let `prepare_coding_agent_bridge_tools` make the final call —
+        // ONE decision, in one place, rather than two that can disagree.
+        let bug_report_available = crate::pending_user_action::user_proof_available();
+        if bug_report_available {
+            bridge_candidates.push(platform_tools::report_bug_tool());
+        }
         let delegation_available = coding_agent_bridge_can_delegate(tools, workspace_enabled);
         let tools = self
             .prepare_coding_agent_bridge_tools(
                 &bridge_candidates,
                 delegation_available,
+                bug_report_available,
                 &targets,
                 &extension_targets,
             )
@@ -6636,6 +6741,7 @@ impl Agent {
             targets,
             extension_targets,
             delegation_available,
+            bug_report: bug_report_available,
         })
     }
 
@@ -14467,6 +14573,141 @@ mod tests {
             .await
             .expect_err("a mid-turn available_tools restriction must revoke dispatch");
         assert!(restricted.contains("not available"), "{restricted}");
+    }
+
+    /// The bug reporter is on a coding-agent child's bridge, and its dispatch
+    /// arm exists.
+    ///
+    /// ⚠ Both halves, in one test, because either alone is a trap. Advertising
+    /// it without the arm hands the child a call that answers `Tool not found`
+    /// AFTER it has written a whole report; adding the arm without advertising
+    /// it leaves a route nothing can reach. The two live in different functions
+    /// hundreds of lines apart and neither refers to the other.
+    ///
+    /// It is gated on `user_proof_available()` and NOT on any capability being
+    /// enabled — this session has only the one test extension, no Knowledge and
+    /// no Developer, and the reporter must still be offered.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_bug_reporter_is_bridged_to_a_coding_agent_child_with_a_route() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == PLATFORM_REPORT_BUG_TOOL_NAME),
+            "a user in a Claude Code or Codex chat must be able to say \"report a bug\": {:?}",
+            plan.tools
+                .iter()
+                .map(|t| t.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+        let call = CallToolRequestParams {
+            name: PLATFORM_REPORT_BUG_TOOL_NAME.into(),
+            arguments: Some(object!({"action": "analyze"})),
+            meta: None,
+            task: None,
+        };
+        dispatch
+            .enforce_tool_access(&session_id, &call)
+            .await
+            .expect(
+                "the reporter has no capability grant to find, so the access check \
+                     must admit it explicitly rather than falling through to the refusal",
+            );
+
+        let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
+            &dispatch,
+            &session_id,
+            call,
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the bridged call must reach the handler");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(
+            !text.contains("not found"),
+            "the advertised tool has no route in the bridge's dispatch: {text}"
+        );
+        assert!(
+            text.contains("Biorouter v") || text.contains("ASK THE USER"),
+            "the handler's own answer must come back through the bridge: {text}"
+        );
+    }
+
+    /// ⚠ And it is withheld where no person can approve the publication.
+    ///
+    /// Both halves again: it is not ADVERTISED, and a child that names it anyway
+    /// is refused at dispatch. The bridged path has its own access check, so the
+    /// roster alone is not the control.
+    ///
+    /// ⚠ Nothing here touches `set_user_proof_available`. That is a
+    /// process-global, read by `Agent::platform_tool_gates` on every
+    /// `list_tools`, so flipping it would silently empty the tool roster of
+    /// every OTHER test running concurrently in this binary — a failure that
+    /// reads as "the tool is never advertised", which is the bug this test
+    /// exists to catch. `#[serial]` does not help: the readers are not in its
+    /// group. The flag is applied instead where it lands, on the plan, which is
+    /// also where `enforce_tool_access` reads it back.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_daemon_that_cannot_ask_a_person_bridges_no_bug_reporter() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let mut plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+
+        let offered = agent
+            .prepare_coding_agent_bridge_tools(
+                &[platform_tools::report_bug_tool()],
+                plan.delegation_available,
+                false,
+                &plan.targets,
+                &plan.extension_targets,
+            )
+            .await;
+        assert!(
+            offered.is_empty(),
+            "a tool whose approval can never be granted must not be advertised: {:?}",
+            offered
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+
+        plan.bug_report = false;
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+        let refusal = dispatch
+            .enforce_tool_access(
+                &session_id,
+                &CallToolRequestParams {
+                    name: PLATFORM_REPORT_BUG_TOOL_NAME.into(),
+                    arguments: Some(object!({"action": "analyze"})),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("a child must not dispatch a tool this plan never offered");
+        assert!(
+            refusal.contains("not in this turn's coding-agent bridge"),
+            "{refusal}"
+        );
     }
 
     #[tokio::test]
