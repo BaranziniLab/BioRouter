@@ -207,6 +207,12 @@ use biorouter_server::auth::{user_action_proof, UserActionProof};
 /// Keep the two in step — the doc states the resolution rules this function
 /// implements, so a change here is a change there.
 ///
+/// ⚠ **That page is where the mechanism lives, and the refusal only points at
+/// it.** [`SESSION_OUT_OF_REACH`] names the page and not this header, on
+/// purpose: the operator reading the page is not the caller being refused, and
+/// a refused public-model caller handed a header to add has been handed the
+/// retry that refusal exists to foreclose.
+///
 /// [#47]: https://github.com/BaranziniLab/biorouter/issues/47
 pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
 
@@ -230,35 +236,38 @@ pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
 /// Versa was told to go and be a human, when what it needed was to be told it
 /// already had the capability and merely was not saying so.
 ///
-/// ⚠ **…and it names the MECHANISM, not only the concept — that fix went
-/// halfway once already.** Naming "a session running a private model" repaired
-/// the register but left the one operative fact out: the reader who receives
-/// this 403 is overwhelmingly a program (a script, a monitor, a scheduled job),
-/// and the only thing such a reader can act on is the header name and a value
-/// to put in it. The measured cost of leaving it implicit is not hypothetical —
-/// a capable agent read this refusal end to end, concluded the daemon had no
-/// programmatic channel into a private session at all, and filed the absence of
-/// a capability that has always shipped. Naming the concept tells a reader what
-/// state to be in; naming [`CALLER_PROVIDER_HEADER`] tells it what to *send*.
+/// ⚠ **It SIGNPOSTS the programmatic channel; it does not hand out a recipe,
+/// and it must never be reworded into one.** A version of this constant shipped
+/// that named [`CALLER_PROVIDER_HEADER`], gave an example value that resolves
+/// Private on a real install, and told the reader to send it. That is the one
+/// direction this arm may not grow. The reader of this 403 is a MODEL far more
+/// often than a person; the arm exists to foreclose the retry; and a caller
+/// handed a header to add has been handed a way to read itself out of "do not
+/// retry as you are", which is the whole force of the sentence above it.
+/// `routes/status.rs` states the rule for the arm beside this one in as many
+/// words: *a refusal that hands the reader a working command is the opposite
+/// move on the adjacent arm*.
 ///
-/// ⚠ **The added sentence is about the CALLER'S OWN credentials and nothing
-/// else**, which is the line [`SESSION_REACH_NO_KEY`] already walks and the
-/// only line on which this constant may grow. It is fixed text: it does not
-/// vary with the target, is not derived from it, and is emitted identically for
-/// `Private` and for [`TargetTier::Unreadable`], so the byte-for-byte
-/// indistinguishability that keeps this refusal from being a per-id oracle is
-/// untouched. Anything that named the chat — even to say the header would have
-/// worked for it — would rebuild the oracle in the act of being helpful.
+/// ⚠ **The defect that wording was written against is real, and the signpost is
+/// what answers it.** An agent read this refusal end to end, took "reachable
+/// from a session running a private model" for a state it had no way to enter,
+/// and reported the absence of a channel that has always shipped. So the
+/// refusal says the channel exists and names the page that documents it, in the
+/// register the keyless arm already uses for its own hint: addressed to whoever
+/// operates the daemon, phrased as a setup decision that is theirs rather than
+/// this caller's, and placed BEFORE the closing "stop and ask the user" so the
+/// last thing a model reads is the stop. The header, an example value and the
+/// `curl` live on that page, `docs/deployment/programmatic-session-access.md`,
+/// whose reader is an operator rather than the caller being refused.
 ///
-/// ⚠ **It is NOT a bypass, and must not be reworded into one.** The header
-/// carries a provider *name* that this daemon resolves against its own registry
-/// ([`caller_capability`]); an unknown name resolves [`ProviderTier::Public`]
-/// and changes nothing. A caller that holds the daemon secret could already
-/// spell an installed provider's name here — the module header records that
-/// residual, which is [#47] — so this sentence discloses no reach that the
-/// header's own doc comment does not, and grants none at all.
-///
-/// [#47]: https://github.com/BaranziniLab/biorouter/issues/47
+/// ⚠ **The sentence is about the CALLER'S OWN situation and nothing else**,
+/// which is the line [`SESSION_REACH_NO_KEY`] already walks and the only line on
+/// which this constant may grow. It is fixed text: it does not vary with the
+/// target, is not derived from it, and is emitted identically for `Private` and
+/// for [`TargetTier::Unreadable`], so the byte-for-byte indistinguishability
+/// that keeps this refusal from being a per-id oracle is untouched. Anything
+/// that named the chat, even to say the channel would have worked for it, would
+/// rebuild the oracle in the act of being helpful.
 pub const SESSION_OUT_OF_REACH: &str =
     "That chat is private, or there is no chat with that id. This request was made on a public \
      model and carried no proof it came from the person at the keyboard, and the two answers are \
@@ -266,14 +275,10 @@ pub const SESSION_OUT_OF_REACH: &str =
      nothing was changed. Do not retry as you are; the same call will be refused again, and no \
      setting, hook or permission mode changes it. A private chat is reachable from a session \
      running a private model, one the institution hosts or one that runs on this machine, or \
-     from the desktop app when the person at the keyboard acts. If you are a program that is \
-     already running under such a model — a script, a monitor, a scheduled job — then you are \
-     not lacking the capability, only failing to state it: declare the provider you are running \
-     by sending the header `X-Caller-Provider: <provider name>` on this request, for example \
-     `X-Caller-Provider: versa_azure`. That header carries a provider NAME and this daemon \
-     resolves it against its own registry, so a name this install does not publish resolves as \
-     public and changes nothing. If this task genuinely needs that chat and you have no such \
-     model to declare, stop and ask the user to open it for you.";
+     from the desktop app when the person at the keyboard acts. Pointing a program that already \
+     runs under such a model at this daemon is a setup decision for whoever operates it, and the \
+     Biorouter documentation covers it under 'Reaching a private chat from a script'. If this \
+     task genuinely needs that chat, stop and ask the user to open it for you.";
 
 /// …and when this daemon was handed no user-action key at all.
 ///
@@ -841,56 +846,97 @@ mod tests {
         assert!(SESSION_OUT_OF_REACH.contains("Do not retry"));
     }
 
-    /// **The mechanism, not only the concept.** The reader who receives this
-    /// 403 is overwhelmingly a program, and the one fact it can act on is the
-    /// header name plus a value to put in it.
+    /// **A signpost for the operator, never a recipe for the caller.**
     ///
-    /// ⚠ This exists because naming the concept alone has already failed once
-    /// in production, in a way no test could see: an agent read the refusal in
-    /// full, took "reachable from a session running a private model" to describe
-    /// a state it had no way to enter, and reported the absence of a channel
-    /// that has always shipped. `contains("private model")` would have passed
-    /// throughout. So the assertion is on the *actionable* half — the literal
-    /// header, an example value that resolves Private on a real install, and the
-    /// register that stops a model reading it as a sanctioned bypass.
+    /// This replaced a version of the constant that named
+    /// [`CALLER_PROVIDER_HEADER`], gave an example value that resolves Private
+    /// on a real install, and told the reader to send it.
+    ///
+    /// ⚠ The defect that version was written against is real, and its half of
+    /// this test keeps its force: an agent read the refusal in full, took
+    /// "reachable from a session running a private model" for a state it had no
+    /// way to enter, and reported the absence of a channel that has always
+    /// shipped. `contains("private model")` would have passed throughout. But
+    /// the cure went past the wall it was decorating. The reader of this 403 is
+    /// a MODEL far more often than a person, and a refused caller told which
+    /// header to add reads itself straight out of "do not retry as you are";
+    /// `routes/status.rs` states the rule for the arm beside this one in as
+    /// many words, that a refusal handing the reader a working command is the
+    /// opposite move on the adjacent arm.
+    ///
+    /// So both halves are asserted together and neither is optional: the
+    /// refusal names the page that documents the channel (discoverable, so no
+    /// reader concludes there is none), and it carries no header name and no
+    /// example value (not actionable, so no reader takes it for the retry). The
+    /// mechanism is asserted to be ON that page, which is what stops a future
+    /// "help the caller" edit from moving it back here and still passing.
     #[test]
-    fn the_refusal_tells_a_program_which_header_to_send() {
+    fn the_refusal_signposts_the_operator_page_without_handing_over_a_recipe() {
+        // Read at compile time, so renaming or moving the page breaks this
+        // build rather than leaving the refusal pointing at nothing.
+        let doc = include_str!("../../../../docs/deployment/programmatic-session-access.md");
+        let title = doc
+            .lines()
+            .next()
+            .and_then(|first| first.strip_prefix("# "))
+            .expect("the signposted page must open with an H1 title");
+
         assert!(
-            SESSION_OUT_OF_REACH.contains(CALLER_PROVIDER_HEADER),
-            "the refusal names the capability but not the header that declares it, which is the \
-             one thing a script, a monitor or a CI job can act on"
+            SESSION_OUT_OF_REACH.contains(title),
+            "the refusal leaves a program believing there is no programmatic channel at all, \
+             which is the report that prompted this sentence: it must name `{title}`"
         );
-        // An example, not just the header name: a caller that must guess the
-        // VALUE has been handed half a mechanism. `versa_azure` is the name the
-        // registry test next door pins as Private, so this example is one that
-        // actually works rather than a plausible-looking placeholder.
         assert!(
-            SESSION_OUT_OF_REACH.contains("versa_azure"),
-            "the refusal names `{CALLER_PROVIDER_HEADER}` without an example value"
+            doc.contains(CALLER_PROVIDER_HEADER),
+            "the page the refusal signposts no longer carries `{CALLER_PROVIDER_HEADER}`, so \
+             the signpost points at nothing an operator can act on"
         );
-        // …and it says the daemon resolves the NAME, so a reader cannot take
-        // the sentence as an invitation to assert a tier it does not have.
+
+        // …and the refusal hands the refused caller nothing to retry with.
         assert!(
-            SESSION_OUT_OF_REACH.contains("provider NAME"),
-            "the refusal offers the header without saying the daemon resolves it, which reads \
-             as a tier the caller may assert"
+            !SESSION_OUT_OF_REACH.contains(CALLER_PROVIDER_HEADER),
+            "the refusal names the header, which to a refused model reads as the retry it was \
+             just told not to attempt"
+        );
+        assert!(
+            !SESSION_OUT_OF_REACH.contains("versa_azure"),
+            "the refusal carries a provider value that resolves Private on a real install, and \
+             with the header name that is a working recipe rather than a refusal"
+        );
+
+        // The stop clause keeps its unqualified force, and the signpost sits
+        // BEFORE it, so the last thing a model reads is the stop.
+        assert!(
+            SESSION_OUT_OF_REACH.contains(
+                "Do not retry as you are; the same call will be refused again, and no setting, \
+                 hook or permission mode changes it."
+            ),
+            "the unqualified stop clause is gone, and foreclosing the retry is why this arm is \
+             worded the way it is"
+        );
+        assert!(
+            SESSION_OUT_OF_REACH
+                .trim_end()
+                .ends_with("stop and ask the user to open it for you."),
+            "the signpost was moved after the stop, so the last thing a model reads is a place \
+             to go rather than an instruction to stop"
         );
     }
 
-    /// **Point 2: the hint belongs to exactly one of the two arms.**
+    /// **The keyless arm names the header even less than the other one does.**
     ///
     /// [`SESSION_REACH_NO_KEY`] is a different state — this daemon was handed no
     /// user-action key at all (`just run-server`, a hand-run `biorouterd
     /// agent`) — and the header does not help there for the caller that arm is
-    /// written for. Putting it in both would re-create the original defect in
-    /// mirror image: the keyless arm would start answering a question its reader
-    /// did not ask, exactly as the reach arm used to answer "be a human" to a
-    /// caller that merely was not declaring itself.
+    /// written for: [`refuse_unless_reachable`] admits on capability *before* it
+    /// ever looks at the proof, so a caller the header would have helped never
+    /// reaches this string at all.
     ///
-    /// ⚠ Not a claim that a capable caller is refused on a keyless daemon — it
-    /// is not: [`refuse_unless_reachable`] admits on capability *before* it ever
-    /// looks at the proof, so such a caller never reaches this string. That is
-    /// precisely why the string has no reason to mention the header.
+    /// ⚠ Neither arm may carry the mechanism now (see
+    /// [`the_refusal_signposts_the_operator_page_without_handing_over_a_recipe`]),
+    /// and this is the worse of the two places a "be helpful to the script" edit
+    /// could land: the reader here has no capability to declare, so a header
+    /// offered to them is purely an invitation to guess a provider name.
     #[test]
     fn the_keyless_arm_does_not_borrow_the_capability_hint() {
         assert!(
@@ -906,11 +952,11 @@ mod tests {
     ///
     /// [`no_such_session_and_a_private_session_are_the_same_refusal`] already
     /// asserts the two answers are equal at every (capability, proof) pair. This
-    /// asserts the other half of why that holds and will keep holding: the hint
-    /// is CONSTANT text about the caller's own credentials, so there is no input
-    /// from which a future edit could make it vary with the target. A sentence
-    /// like "the header would have worked for this chat" would satisfy the
-    /// equality test only until someone made it conditional.
+    /// asserts the other half of why that holds and will keep holding: the
+    /// signpost is CONSTANT text about the caller's own situation, so there is
+    /// no input from which a future edit could make it vary with the target. A
+    /// sentence like "that page would have got you into this chat" would satisfy
+    /// the equality test only until someone made it conditional.
     #[test]
     fn the_capability_hint_is_constant_and_never_derived_from_the_target() {
         for capability in CAPABILITIES {
@@ -931,14 +977,76 @@ mod tests {
                 }
             }
         }
-        // The hint names no part of a session. These are the four fields
-        // `SessionSummary` carries; the refusal may not have acquired a way to
-        // spell any of them.
-        for leak in ["session_id", "working_dir", "privacy_tier", "\"name\""] {
+        // The refusal names no part of a session. `SessionSummary` carries four
+        // fields, and the guard that stood here tested for their snake_case
+        // NAMES: `session_id`, `working_dir`, `privacy_tier`, `"name"`. A leak
+        // arrives as a VALUE and never as the field's name, so those tests
+        // could not fire on any refusal this gate is able to produce. Two were
+        // dead on arrival in a way worth naming: `session_id` could not have
+        // caught an id being spliced in, which is the one leak that matters
+        // most here, and `"name"` had been quoted precisely so it would stop
+        // tripping on the constant's own "provider name" — a guard bent to fit
+        // the text it guards.
+        //
+        // A guard that cannot fail is not a guard. So each one below is a
+        // predicate shaped like the leak it names, and each is run against a
+        // positive control that really does leak that field BEFORE it is run
+        // against the constants. If a control stops firing, the guard has been
+        // blunted and this test says so instead of passing.
+        struct LeakGuard {
+            field: &'static str,
+            leaks: fn(&str) -> bool,
+            control: &'static str,
+        }
+        let guards = [
+            LeakGuard {
+                // A session id is `YYYYMMDD_N`, so an id spliced into a refusal
+                // shows up as ASCII digits. Neither constant carries one.
+                field: "id",
+                leaks: |message| message.chars().any(|c| c.is_ascii_digit()),
+                control: "That chat, 20260904_1, is private.",
+            },
+            LeakGuard {
+                // An LLM-written title is arbitrary text, so the only shape it
+                // reliably takes is that it has to be quoted to be readable.
+                field: "name",
+                leaks: |message| message.contains('"') || message.contains('\u{201c}'),
+                control: "The chat \"Patient cohort review\" is private.",
+            },
+            LeakGuard {
+                // A working directory arrives as a path.
+                field: "working_dir",
+                leaks: |message| message.contains('/') || message.contains('\\'),
+                control: "That chat runs in /Users/someone/patients.",
+            },
+            LeakGuard {
+                // The tier leaks by being ASSERTED. This refusal may call a
+                // chat private only while offering "or there is no chat with
+                // that id" in the same breath, which is the whole reason the
+                // two answers are one answer.
+                field: "privacy_tier",
+                leaks: |message| {
+                    message.contains("chat is private")
+                        && !message.contains("or there is no chat with that id")
+                },
+                control: "That chat is private.",
+            },
+        ];
+        for guard in guards {
             assert!(
-                !SESSION_OUT_OF_REACH.contains(leak),
-                "the refusal now names `{leak}`, which is a fact about the chat"
+                (guard.leaks)(guard.control),
+                "the `{}` guard does not fire on a refusal that really does leak that field, so \
+                 it cannot fail and is guarding nothing",
+                guard.field
             );
+            for message in [SESSION_OUT_OF_REACH, SESSION_REACH_NO_KEY] {
+                assert!(
+                    !(guard.leaks)(message),
+                    "this refusal now discloses the target's `{}`, which is a fact about the \
+                     chat: {message}",
+                    guard.field
+                );
+            }
         }
     }
 
