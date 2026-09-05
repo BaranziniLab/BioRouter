@@ -39,6 +39,23 @@
 //!      GPG/AWS/gcloud/kube/docker creds, macOS keychains, launchd agents, and
 //!      browser credential stores (see [`SENSITIVE_HOME_SUBPATHS`]).
 //!
+//! …plus one criterion that is not about *where* the target is at all:
+//!   5. the **recursive deletion of an established directory** — an `rm -r`
+//!      (or `Remove-Item -Recurse`, or `rd /s`) of a path that is an existing,
+//!      non-empty directory this session did not create. Criteria 1-4 measure
+//!      blast radius by location and are silent on volume, but `rm -rf` on a
+//!      populated tree is a different risk class from writing one file:
+//!      `~/Desktop/kdps-build` classifies as [`Blast::Ordinary`], and a real
+//!      Auto-mode agent destroyed an unpushed git repository there with no
+//!      prompt of any kind. See [`established_directory_reason`] for what makes
+//!      a directory "established", and note what is deliberately NOT escalated:
+//!      an empty directory, a plain file, a symlink, a temp tree, a regenerable
+//!      build/dependency/cache directory ([`REGENERABLE_DIR_NAMES`]), a tree
+//!      whose whole content post-dates the session, and anything the session is
+//!      on record as having created. A prompt on every `rm -rf node_modules`
+//!      would get Auto mode switched off, which is a worse outcome than the
+//!      hole.
+//!
 //! Reads are intentionally out of scope here: secret-file reads are already
 //! denied by `SecretGuard`. Only mutations escalate, so that ordinary Auto-mode
 //! work — writing scratch files, editing the workspace, deleting build output —
@@ -71,18 +88,39 @@
 //!      literal `"/"` as the filesystem root and stalled Auto mode on a prompt.
 //!
 //! Reads are never escalated: only redirect targets, mutating-binary targets,
-//! and mutating editor writes count. A `cat /etc/hosts` or a `view` of a
-//! sensitive path yields nothing.
+//! mutating editor writes and recursive deletes count. A `cat /etc/hosts`, an
+//! `ls` or a `view` of a sensitive path yields nothing — the read-only binaries
+//! are deliberately absent from [`SHELL_MUTATING_BINARIES`] and criterion 5
+//! asks for a recursion flag on a delete verb, so neither list can escalate one.
 //!
-//! Known gap (documented, not silently ignored): a target *dynamically*
-//! constructed inside a script (`shell({command: \`… >> ${dir}/config\`})` with
-//! `dir` computed at runtime) cannot be resolved by static scanning and is not
-//! escalated. Gating the code-execution extension's *inner* dispatch boundary
-//! (`code_execution_extension::run_tool_handler`) against the same sensitivity
-//! check — with a deny, since that layer cannot surface an interactive ask — is
-//! the recommended deeper follow-up.
+//! Criterion 5 rides shapes 2 and 3 (command lines, including the ones embedded
+//! in an `execute_code` body); it is deliberately NOT wired to shape 1, because
+//! a file tool's `delete`/`remove` argument says nothing about recursion and
+//! grading it would turn every `delete_file` into a candidate prompt.
+//! Relative targets are resolved through any `cd` earlier in the same line:
+//! the incident arrived as `cd <dir> && rm -rf <relative>`, so a classifier that
+//! resolved against the session cwd would have missed the exact shape that
+//! motivated the rule ([`resolved_command_targets`]).
+//!
+//! Known gaps (documented, not silently ignored):
+//!   * A target *dynamically* constructed inside a script
+//!     (`shell({command: \`… >> ${dir}/config\`})` with `dir` computed at
+//!     runtime) cannot be resolved by static scanning and is not escalated.
+//!     Gating the code-execution extension's *inner* dispatch boundary
+//!     (`code_execution_extension::run_tool_handler`) against the same
+//!     sensitivity check — with a deny, since that layer cannot surface an
+//!     interactive ask — is the recommended deeper follow-up.
+//!   * Criterion 5 reads the delete verb's own operands, so a deletion whose
+//!     targets arrive from somewhere else — `find … -exec rm -rf {} \;`,
+//!     `… | xargs rm -rf` — has no target to classify and is not escalated.
+//!     That is the same shape as the gap above and has the same answer; it is
+//!     not worth a heuristic here, because this gate exists to catch a
+//!     *mistake*, not to withstand a path deliberately routed around it.
 
+use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -90,10 +128,12 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::config::BioRouterMode;
-use crate::conversation::message::{Message, ToolRequest};
+use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::security::command_text_from;
-use crate::security::policy::command::{redirect_targets, ParsedCommand};
-use crate::security::policy::target::{classify, normalize_for, Blast, EnvFacts, TargetPath};
+use crate::security::policy::command::{redirect_targets, ParsedCommand, Segment};
+use crate::security::policy::target::{
+    classify, normalize_for, Blast, Dialect, EnvFacts, TargetPath,
+};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
 /// `text_editor`-style `command` values that MUTATE the target (everything but
@@ -321,14 +361,14 @@ fn is_execute_code(tool_name: &str) -> bool {
 }
 
 /// A sensitive **write** in a shell command line: any redirect target (`>` /
-/// `>>`), or the path argument of a mutating binary. Returns the normalized
-/// target path + reason, or `None` for a read.
-fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<(String, &'static str)> {
+/// `>>`), or the path argument of a mutating binary. Returns the finding phrase,
+/// or `None` for a read.
+fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<String> {
     // Redirects are unconditional writes, wherever in the line they appear.
     for rt in redirect_targets(command) {
         let tp = normalize_for(env.platform, &rt, env);
         if let Some(reason) = sensitivity_reason(&tp, env) {
-            return Some((tp.norm, reason));
+            return Some(write_finding(&tp.norm, reason));
         }
     }
     // Mutating binaries: their (already classified) path/redirect targets.
@@ -339,11 +379,579 @@ fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<(String, 
         }
         for hit in &seg.targets {
             if let Some(reason) = sensitivity_reason(&hit.path, env) {
-                return Some((hit.path.norm.clone(), reason));
+                return Some(write_finding(&hit.path.norm, reason));
             }
         }
     }
     None
+}
+
+/// The finding phrase for criteria 1-4, which all describe a write to a
+/// sensitive *location*. Criterion 5 writes its own (it has to name what would
+/// be destroyed, not which rule matched).
+fn write_finding(path: &str, reason: &str) -> String {
+    format!("writes to {path} ({reason})")
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 5 — recursive deletion of an established directory
+// ---------------------------------------------------------------------------
+
+/// Everything outside the tool call itself that the sensitive-operation rules
+/// consult. Grouped into one value so criterion 5 can ask about the session
+/// without every classifier growing a third, fourth and fifth parameter.
+///
+/// The provenance set is derived **lazily and once**: walking a long
+/// conversation is wasted work for the overwhelming majority of calls, which
+/// name no deletion target at all.
+pub struct CallSession<'a> {
+    working_dir: &'a Path,
+    started_at: SystemTime,
+    messages: &'a [Message],
+    current_request_ids: &'a [String],
+    created_dirs: OnceCell<HashSet<String>>,
+}
+
+impl<'a> CallSession<'a> {
+    pub fn new(
+        working_dir: &'a Path,
+        started_at: SystemTime,
+        messages: &'a [Message],
+        current_request_ids: &'a [String],
+    ) -> Self {
+        Self {
+            working_dir,
+            started_at,
+            messages,
+            current_request_ids,
+            created_dirs: OnceCell::new(),
+        }
+    }
+
+    /// A session with a working directory and nothing else: no start time and no
+    /// history. Criterion 5 then rests on the two facts that need neither — a
+    /// directory holding a git repository, and one holding content the
+    /// filesystem cannot date.
+    pub fn workspace_only(working_dir: &'a Path) -> Self {
+        Self::new(working_dir, UNIX_EPOCH, &[], &[])
+    }
+
+    pub fn working_dir(&self) -> &Path {
+        self.working_dir
+    }
+
+    fn started_at(&self) -> SystemTime {
+        self.started_at
+    }
+
+    /// Normalized paths of every directory an **earlier** tool call in this
+    /// conversation asked to bring into existence.
+    fn created_dirs(&self, env: &EnvFacts) -> &HashSet<String> {
+        self.created_dirs
+            .get_or_init(|| self.scan_created_dirs(env))
+    }
+
+    fn scan_created_dirs(&self, env: &EnvFacts) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for message in self.messages {
+            for content in &message.content {
+                let MessageContent::ToolRequest(request) = content else {
+                    continue;
+                };
+                // A call does not vouch for itself: `rm -rf x && mkdir x` is the
+                // exact shape of the incident this criterion exists for, so the
+                // batch under inspection is never its own provenance.
+                if self.current_request_ids.contains(&request.id) {
+                    continue;
+                }
+                let Ok(call) = &request.tool_call else {
+                    continue;
+                };
+                let Some(args) = call.arguments.as_ref() else {
+                    continue;
+                };
+                collect_created_dirs(&call.name, args, env, &mut out);
+            }
+        }
+        out
+    }
+}
+
+/// When the session began, as a wall-clock instant. A row whose `created_at` is
+/// the epoch default carries no usable start, and resolves to [`UNIX_EPOCH`],
+/// which switches the *age* half of criterion 5 off rather than dating every
+/// file on the disk as pre-session.
+fn session_started_at(session: &crate::session::Session) -> SystemTime {
+    let secs = session.created_at.timestamp();
+    if secs <= 0 {
+        UNIX_EPOCH
+    } else {
+        UNIX_EPOCH + Duration::from_secs(secs as u64)
+    }
+}
+
+/// Directory names that name **regenerable** output — build products, installed
+/// dependencies, caches. Deleting one costs a rebuild, never data, and an agent
+/// in Auto mode does it constantly; a prompt here is the failure mode that gets
+/// Auto mode switched off. Consulted by basename only, and **overridden by a
+/// `.git`**: a directory that is itself a repository is not build output,
+/// whatever it is called.
+const REGENERABLE_DIR_NAMES: &[&str] = &[
+    "node_modules",
+    "bower_components",
+    "vendor",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "obj",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".output",
+    ".vite",
+    ".angular",
+    ".turbo",
+    ".parcel-cache",
+    ".cache",
+    ".gradle",
+    ".terraform",
+    ".tox",
+    ".eggs",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "coverage",
+    "htmlcov",
+    ".sass-cache",
+    ".ipynb_checkpoints",
+];
+
+/// Entry budget for [`probe_directory`]. The probe answers three yes/no
+/// questions and produces one number for the prompt; it is not an inventory, so
+/// it stops early and says so rather than walking a tree of any size on the
+/// agent's critical path.
+const DIR_PROBE_MAX_ENTRIES: usize = 1000;
+
+/// Depth budget for [`probe_directory`], for the same reason.
+const DIR_PROBE_MAX_DEPTH: usize = 6;
+
+/// Is this segment a **recursive** directory delete? Recursion is required, not
+/// force: `rm -r dir` destroys just as much as `rm -rf dir`, while `rm -f file`
+/// and `rmdir dir` (which refuses a non-empty directory) destroy nothing this
+/// criterion is about.
+fn is_recursive_delete(seg: &Segment) -> bool {
+    match seg.dialect {
+        Dialect::Posix => {
+            seg.binary.eq_ignore_ascii_case("rm") && posix_has_recursive_flag(&seg.argv)
+        }
+        // The parser canonicalizes `ri` / `rd` / `del` to `Remove-Item` and
+        // expands an unambiguous `-rec` prefix to `-Recurse`.
+        Dialect::PowerShell => {
+            seg.binary.eq_ignore_ascii_case("remove-item") && seg.has_arg("-Recurse")
+        }
+        Dialect::Cmd => {
+            matches!(seg.binary.as_str(), "rd" | "rmdir")
+                && seg.argv.iter().any(|t| t.eq_ignore_ascii_case("/s"))
+        }
+    }
+}
+
+/// `-r`, `-R` or `--recursive`, including inside a bundled short cluster
+/// (`-rf`, `-fr`, `-vrf`). Scanning stops at `--`, after which a token is an
+/// operand even when it opens with a dash.
+fn posix_has_recursive_flag(argv: &[String]) -> bool {
+    for tok in argv.iter().skip(1) {
+        if tok == "--" {
+            return false;
+        }
+        if tok == "--recursive" {
+            return true;
+        }
+        if tok.starts_with("--") {
+            continue;
+        }
+        if let Some(cluster) = tok.strip_prefix('-') {
+            if cluster.chars().any(|c| c == 'r' || c == 'R') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A segment's operand tokens — its path arguments, with this dialect's flags
+/// removed. A PowerShell parameter *value* (`-Path C:\x`) survives, because it
+/// does not itself open with a dash.
+fn segment_operands(seg: &Segment) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut end_of_flags = false;
+    for tok in seg.argv.iter().skip(1) {
+        let is_flag = match seg.dialect {
+            Dialect::Posix => {
+                if !end_of_flags && tok == "--" {
+                    end_of_flags = true;
+                    continue;
+                }
+                !end_of_flags && tok.len() > 1 && tok.starts_with('-')
+            }
+            Dialect::PowerShell => tok.starts_with('-'),
+            Dialect::Cmd => tok.starts_with('/'),
+        };
+        if !is_flag {
+            out.push(tok.clone());
+        }
+    }
+    out
+}
+
+/// The directory a `cd`-style segment moves to, if it can be resolved.
+///
+/// This is what makes `cd /a/b && rm -rf c` classify `/a/b/c` rather than
+/// `<session cwd>/c` — the shape the incident arrived in. `cd -` names the
+/// previous directory, which is not recoverable from the text, so it leaves the
+/// tracked directory alone.
+fn cd_destination(seg: &Segment) -> Option<String> {
+    let binary = seg.binary.to_ascii_lowercase();
+    if !matches!(
+        binary.as_str(),
+        "cd" | "chdir" | "pushd" | "set-location" | "sl"
+    ) {
+        return None;
+    }
+    match segment_operands(seg).into_iter().next() {
+        Some(dest) if dest == "-" => None,
+        Some(dest) => Some(dest),
+        // A bare `cd` goes home; a bare `pushd` swaps, which is not resolvable.
+        None if binary == "pushd" => None,
+        None => Some("~".to_string()),
+    }
+}
+
+/// Resolve the operands `pick` selects against the working directory **in
+/// effect at that point in the command line**, following `cd` as the shell
+/// would. Segments arrive in textual order, so a `cd` only affects what comes
+/// after it.
+fn resolved_command_targets<F>(command: &str, env: &EnvFacts, pick: F) -> Vec<TargetPath>
+where
+    F: Fn(&Segment) -> Vec<String>,
+{
+    let parsed = ParsedCommand::parse_for(command, env.platform, env);
+    let mut here = env.clone();
+    let mut out = Vec::new();
+    for seg in &parsed.segments {
+        if let Some(dest) = cd_destination(seg) {
+            here.cwd = normalize_for(here.platform, &dest, &here).norm;
+            continue;
+        }
+        for raw in pick(seg) {
+            if raw.trim().is_empty() {
+                continue;
+            }
+            out.push(normalize_for(here.platform, &raw, &here));
+        }
+    }
+    out
+}
+
+/// Every path a recursive delete in `command` would remove.
+fn recursive_delete_targets(command: &str, env: &EnvFacts) -> Vec<TargetPath> {
+    resolved_command_targets(command, env, |seg| {
+        if is_recursive_delete(seg) {
+            segment_operands(seg)
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+/// Every directory `command` would bring into existence — the provenance half
+/// of criterion 5.
+fn directory_creation_targets(command: &str, env: &EnvFacts) -> Vec<TargetPath> {
+    resolved_command_targets(command, env, created_dir_operands)
+}
+
+/// The operands of a directory-creating segment. Deliberately short: a command
+/// missing from here costs at most one approval prompt for a directory the
+/// session did make, whereas a wrong entry silently *withholds* a prompt.
+fn created_dir_operands(seg: &Segment) -> Vec<String> {
+    let binary = seg.binary.to_ascii_lowercase();
+    let operands = segment_operands(seg);
+    match binary.as_str() {
+        "mkdir" | "md" | "new-item" => operands,
+        "git" => git_created_dirs(&operands),
+        "cargo" => match operands.split_first() {
+            Some((sub, rest)) if matches!(sub.as_str(), "new" | "init") => {
+                rest.first().cloned().into_iter().collect()
+            }
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// `git clone <url> [dir]`, `git init <dir>`, `git worktree add <dir>`.
+///
+/// Worth the special case rather than left to the age heuristic: a clone the
+/// session made is exactly a directory that is non-empty and holds a `.git`,
+/// which is otherwise the strongest signal criterion 5 has.
+fn git_created_dirs(operands: &[String]) -> Vec<String> {
+    let Some((sub, rest)) = operands.split_first() else {
+        return Vec::new();
+    };
+    match sub.as_str() {
+        "clone" => match rest {
+            [] => Vec::new(),
+            [url] => clone_dir_from_url(url).into_iter().collect(),
+            [_url, dir, ..] => vec![dir.clone()],
+        },
+        // A bare `git init` / `cargo init` does not create its directory.
+        "init" => rest.first().cloned().into_iter().collect(),
+        "worktree" => match rest.split_first() {
+            Some((add, tail)) if add == "add" => tail.first().cloned().into_iter().collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// The directory `git clone <url>` creates when given no destination: the URL's
+/// last component with any `.git` suffix removed.
+fn clone_dir_from_url(url: &str) -> Option<String> {
+    let leaf = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let leaf = leaf.strip_suffix(".git").unwrap_or(leaf);
+    (!leaf.is_empty()).then(|| leaf.to_string())
+}
+
+/// Tool names that create a directory outside a shell (`files__mkdir`,
+/// `create_directory`, …).
+fn tool_name_creates_directories(tool_name: &str) -> bool {
+    let name = tool_name.to_ascii_lowercase();
+    ["mkdir", "create_dir", "make_dir", "new_dir"]
+        .iter()
+        .any(|hint| name.contains(hint))
+}
+
+/// Record the directories one historical tool call asked to create: its own path
+/// arguments when it is a directory-creating tool, the command line it carries,
+/// and — for `execute_code` — the command lines embedded in its body.
+fn collect_created_dirs(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    env: &EnvFacts,
+    out: &mut HashSet<String>,
+) {
+    if tool_name_creates_directories(tool_name) {
+        for raw in path_values(args) {
+            if !raw.trim().is_empty() {
+                out.insert(normalize_for(env.platform, &raw, env).norm);
+            }
+        }
+    }
+    if let Some(command) = command_text_from(tool_name, args) {
+        out.extend(
+            directory_creation_targets(&command, env)
+                .into_iter()
+                .map(|t| t.norm),
+        );
+    }
+    if is_execute_code(tool_name) {
+        if let Some(code) = args.get("code").and_then(Value::as_str) {
+            for literal in extract_string_literals(code) {
+                out.extend(
+                    directory_creation_targets(&literal, env)
+                        .into_iter()
+                        .map(|t| t.norm),
+                );
+            }
+        }
+    }
+}
+
+/// What a recursive delete of one directory would actually destroy, as far as a
+/// bounded look at the filesystem can say.
+struct DirectoryProbe {
+    /// Non-directory entries visited.
+    files: usize,
+    /// Every entry visited, directories included.
+    entries: usize,
+    /// The walk hit [`DIR_PROBE_MAX_ENTRIES`], so the counts are lower bounds.
+    capped: bool,
+    /// The target holds a `.git`, or is one. Destroying a repository's history
+    /// is unrecoverable in a way that losing a working tree is not.
+    has_git: bool,
+    /// The filesystem dates the directory, or something in it, before the
+    /// session began — so this is not content the session produced.
+    holds_pre_session_content: bool,
+}
+
+impl DirectoryProbe {
+    /// The size clause of the approval message. The prompt has to let the user
+    /// recognise a mistake at a glance, which a rule name cannot do.
+    fn describe(&self) -> String {
+        let more = if self.capped { "+" } else { "" };
+        let size = if self.files > 0 {
+            format!("{}{more} files", self.files)
+        } else {
+            format!("{}{more} entries", self.entries)
+        };
+        if self.has_git {
+            format!("{size}, contains a git repository")
+        } else {
+            size
+        }
+    }
+}
+
+/// Is `path` a git repository's working tree, or the `.git` directory itself?
+///
+/// One `stat`, which is what lets it gate the bounded walk below rather than
+/// being read off it: `rm -rf node_modules` is the single commonest recursive
+/// delete an Auto-mode agent makes, and it must not cost a directory walk to
+/// reach the name exemption.
+fn holds_git_repository(path: &Path) -> bool {
+    path.join(".git").exists() || path.file_name().is_some_and(|name| name == ".git")
+}
+
+/// Does the basename name regenerable output? See [`REGENERABLE_DIR_NAMES`].
+fn is_regenerable_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| REGENERABLE_DIR_NAMES.contains(&name.to_ascii_lowercase().as_str()))
+}
+
+/// Look at `path` on the host filesystem. `None` unless it is an existing,
+/// non-empty **directory** — a missing path, a plain file, and a symlink (which
+/// `rm -rf` unlinks without touching its target) are all outside this criterion.
+fn probe_directory(
+    path: &Path,
+    session_start: SystemTime,
+    has_git: bool,
+) -> Option<DirectoryProbe> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    let mut probe = DirectoryProbe {
+        files: 0,
+        entries: 0,
+        capped: false,
+        has_git,
+        holds_pre_session_content: predates_session(&meta, session_start),
+    };
+    let mut queue = vec![(path.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = queue.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if probe.entries >= DIR_PROBE_MAX_ENTRIES {
+                probe.capped = true;
+                return Some(probe);
+            }
+            probe.entries += 1;
+            // `DirEntry::metadata` does not follow symlinks, which is what
+            // `rm -rf` does too.
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if predates_session(&meta, session_start) {
+                probe.holds_pre_session_content = true;
+            }
+            if meta.is_dir() {
+                if depth + 1 < DIR_PROBE_MAX_DEPTH {
+                    queue.push((entry.path(), depth + 1));
+                }
+            } else {
+                probe.files += 1;
+            }
+        }
+    }
+    (probe.entries > 0).then_some(probe)
+}
+
+/// Did this entry exist before the session started?
+///
+/// Birth time is preferred wherever the platform records it: an archive
+/// extraction or a `cp -p` carries the *original* mtime, and would otherwise
+/// read as pre-session content the session in fact produced. When neither time
+/// is readable the answer is "no" — an unanswerable question must not become a
+/// prompt, or an unusual filesystem turns every delete into one.
+fn predates_session(meta: &std::fs::Metadata, session_start: SystemTime) -> bool {
+    if session_start <= UNIX_EPOCH {
+        return false;
+    }
+    match meta.created().or_else(|_| meta.modified()) {
+        Ok(born) => born < session_start,
+        Err(_) => false,
+    }
+}
+
+/// Criterion 5, for one resolved deletion target: the recursive deletion of a
+/// directory that already existed, is not empty, and is not this session's own
+/// work.
+///
+/// The order of the tests is the order of their cost — a string compare, then
+/// one `stat`, then a bounded walk, and only then the conversation scan.
+fn established_directory_reason(
+    target: &TargetPath,
+    session: &CallSession<'_>,
+    env: &EnvFacts,
+) -> Option<String> {
+    if is_temp_path(&target.norm) {
+        return None;
+    }
+    let path = Path::new(target.norm.as_str());
+    // A repository is never build output, whatever it is called, so the name
+    // exemption yields to a `.git`.
+    let has_git = holds_git_repository(path);
+    if !has_git && is_regenerable_name(path) {
+        return None;
+    }
+    let probe = probe_directory(path, session.started_at(), has_git)?;
+    // Content the session itself produced is not the user's work: a scratch tree
+    // built and torn down inside one turn must never prompt.
+    if !has_git && !probe.holds_pre_session_content {
+        return None;
+    }
+    if session.created_dirs(env).contains(&target.norm) {
+        return None;
+    }
+
+    Some(format!(
+        "recursively deletes {} — an existing directory this session did not create ({})",
+        target.norm,
+        probe.describe()
+    ))
+}
+
+/// A recursive delete in `command` that criterion 5 escalates, if any.
+fn command_deletes_established_directory(
+    command: &str,
+    env: &EnvFacts,
+    session: &CallSession<'_>,
+) -> Option<String> {
+    let targets = recursive_delete_targets(command, env);
+    if targets.is_empty() {
+        return None;
+    }
+    targets
+        .iter()
+        .find_map(|target| established_directory_reason(target, session, env))
+}
+
+/// Every criterion a shell command line can trip: the four path-classification
+/// ones (via [`command_writes_sensitively`]) and criterion 5.
+fn command_is_sensitive(
+    command: &str,
+    env: &EnvFacts,
+    session: &CallSession<'_>,
+) -> Option<String> {
+    command_writes_sensitively(command, env)
+        .or_else(|| command_deletes_established_directory(command, env, session))
 }
 
 /// Read the JS string / template literal that opens at `chars[start]` (a `"`,
@@ -594,7 +1202,7 @@ fn mutating_path_write(
     tool_name: &str,
     args: &Map<String, Value>,
     env: &EnvFacts,
-) -> Option<(String, &'static str)> {
+) -> Option<String> {
     if !operation_is_mutating(tool_name, args) {
         return None;
     }
@@ -604,13 +1212,14 @@ fn mutating_path_write(
         }
         let tp = normalize_for(env.platform, &raw, env);
         if let Some(reason) = sensitivity_reason(&tp, env) {
-            return Some((tp.norm, reason));
+            return Some(write_finding(&tp.norm, reason));
         }
     }
     None
 }
 
-/// Scan an `execute_code` JS body for a sensitive write. Two independent passes,
+/// Scan an `execute_code` JS body for a sensitive operation. Two independent
+/// passes,
 /// each of which associates a candidate path with the **concrete call that would
 /// mutate it** rather than with the script as a whole:
 ///
@@ -631,9 +1240,9 @@ fn mutating_path_write(
 /// target. A KB page write (`kb_write_page`, whose name contains "write") beside
 /// an unrelated `page.path.split("/")` therefore normalized the utility literal
 /// `"/"` to the filesystem root and parked Auto mode on an approval prompt.
-fn code_writes_sensitively(code: &str, env: &EnvFacts) -> Option<(String, &'static str)> {
+fn code_is_sensitive(code: &str, env: &EnvFacts, session: &CallSession<'_>) -> Option<String> {
     for lit in extract_string_literals(code) {
-        if let Some(hit) = command_writes_sensitively(&lit, env) {
+        if let Some(hit) = command_is_sensitive(&lit, env, session) {
             return Some(hit);
         }
     }
@@ -649,25 +1258,31 @@ fn code_writes_sensitively(code: &str, env: &EnvFacts) -> Option<(String, &'stat
 /// system operation that must be approved even in Auto mode; `None` otherwise.
 ///
 /// Inspects three shapes (see the module boundary docs): file-editor path
-/// arguments, shell command lines, and the `execute_code` JS body. Pure over its
-/// inputs except for reading the host environment (`$HOME`, cwd) via
-/// [`EnvFacts::host`]; path canonicalization never touches the filesystem.
+/// arguments, shell command lines, and the `execute_code` JS body. Reads the
+/// host environment (`$HOME`, cwd) via [`EnvFacts::host`]; path canonicalization
+/// itself never touches the filesystem.
+///
+/// Criterion 5 is the one exception, and deliberately so: "an existing,
+/// non-empty directory" is not a property of the command text, so a command line
+/// naming a recursive delete earns one bounded look at the target on disk. That
+/// look is reached only *after* a delete target has been parsed out, so an
+/// ordinary call still costs no I/O.
 pub fn sensitive_file_operation(
     tool_name: &str,
     args: &Map<String, Value>,
-    working_dir: &Path,
+    session: &CallSession<'_>,
 ) -> Option<String> {
-    let env = EnvFacts::host(&working_dir.to_string_lossy());
+    let env = EnvFacts::host(&session.working_dir().to_string_lossy());
 
     // 1. File-editor / file-tool path arguments (mutations only).
-    if let Some((path, reason)) = mutating_path_write(tool_name, args, &env) {
-        return Some(format!("writes to {path} ({reason})"));
+    if let Some(finding) = mutating_path_write(tool_name, args, &env) {
+        return Some(finding);
     }
 
     // 2. Shell command lines (developer/shell and any command-bearing tool).
     if let Some(command) = command_text_from(tool_name, args) {
-        if let Some((path, reason)) = command_writes_sensitively(&command, &env) {
-            return Some(format!("writes to {path} ({reason})"));
+        if let Some(finding) = command_is_sensitive(&command, &env, session) {
+            return Some(finding);
         }
     }
 
@@ -675,8 +1290,8 @@ pub fn sensitive_file_operation(
     //    agent-layer inspector, so scan the script itself.
     if is_execute_code(tool_name) {
         if let Some(code) = args.get("code").and_then(Value::as_str) {
-            if let Some((path, reason)) = code_writes_sensitively(code, &env) {
-                return Some(format!("writes to {path} ({reason})"));
+            if let Some(finding) = code_is_sensitive(code, &env, session) {
+                return Some(finding);
             }
         }
     }
@@ -706,7 +1321,7 @@ impl ToolInspector for SensitiveOpsInspector {
     async fn inspect(
         &self,
         tool_requests: &[ToolRequest],
-        _messages: &[Message],
+        messages: &[Message],
         biorouter_mode: BioRouterMode,
         session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
@@ -716,6 +1331,17 @@ impl ToolInspector for SensitiveOpsInspector {
             return Ok(vec![]);
         }
 
+        // One `CallSession` for the whole batch: the directory-provenance scan
+        // behind criterion 5 is memoized on it, so a conversation is walked at
+        // most once per inspection no matter how many calls the model made.
+        let request_ids: Vec<String> = tool_requests.iter().map(|r| r.id.clone()).collect();
+        let call_session = CallSession::new(
+            &session.working_dir,
+            session_started_at(session),
+            messages,
+            &request_ids,
+        );
+
         let mut results = Vec::new();
         for request in tool_requests {
             let Ok(tool_call) = &request.tool_call else {
@@ -724,9 +1350,7 @@ impl ToolInspector for SensitiveOpsInspector {
             let Some(args) = tool_call.arguments.as_ref() else {
                 continue;
             };
-            if let Some(reason) =
-                sensitive_file_operation(&tool_call.name, args, &session.working_dir)
-            {
+            if let Some(reason) = sensitive_file_operation(&tool_call.name, args, &call_session) {
                 tracing::warn!(
                     counter.biorouter.sensitive_op_escalated = 1,
                     tool_name = %tool_call.name,
@@ -768,6 +1392,12 @@ mod tests {
 
     fn nix_env() -> EnvFacts {
         EnvFacts::for_platform(Platform::Linux, "/home/me/proj", "/home/me")
+    }
+
+    /// A session with a working directory and no history — the shape every
+    /// pre-criterion-5 test was written against.
+    fn test_session() -> CallSession<'static> {
+        CallSession::workspace_only(Path::new("/home/me/proj"))
     }
 
     // --- path classification (pure) ---------------------------------------
@@ -883,7 +1513,7 @@ mod tests {
         let finding = sensitive_file_operation(
             "developer__text_editor",
             &args(json!({"command": "write", "path": "/etc/cron.d/backdoor"})),
-            Path::new("/home/me/proj"),
+            &test_session(),
         );
         assert!(finding.is_some(), "write to /etc must be flagged");
     }
@@ -893,7 +1523,7 @@ mod tests {
         let finding = sensitive_file_operation(
             "developer__text_editor",
             &args(json!({"command": "view", "path": "/etc/hosts"})),
-            Path::new("/home/me/proj"),
+            &test_session(),
         );
         assert!(finding.is_none(), "reading /etc must NOT be flagged");
     }
@@ -903,7 +1533,7 @@ mod tests {
         let finding = sensitive_file_operation(
             "developer__text_editor",
             &args(json!({"command": "write", "path": "/tmp/qa/hi.txt"})),
-            Path::new("/home/me/proj"),
+            &test_session(),
         );
         assert!(
             finding.is_none(),
@@ -930,7 +1560,7 @@ mod tests {
             let finding = sensitive_file_operation(
                 crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
                 &args(arguments.clone()),
-                Path::new("/home/me/proj"),
+                &test_session(),
             );
             assert!(
                 finding.is_none(),
@@ -1099,7 +1729,7 @@ mod tests {
             let finding = sensitive_file_operation(
                 "developer__text_editor",
                 &args(json!({ "command": "write", "path": path })),
-                Path::new("/home/me/proj"),
+                &test_session(),
             );
             assert!(
                 finding.is_none(),
@@ -1134,7 +1764,7 @@ const repo = "/home/me/proj";
 const status = shell({ command: `cd ${repo} && git status --short && find landing -type f -print 2>/dev/null | sort` });
 record_result({ status });"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "an execute_code body whose only /dev reference is 2>/dev/null must NOT be flagged"
         );
     }
@@ -1148,7 +1778,7 @@ record_result({ status });"#;
 shell({ command: `printf 'Host evil\n' >> ~/.ssh/config` });
 record_result("done");"#;
         assert!(
-            code_writes_sensitively(code, &env).is_some(),
+            code_is_sensitive(code, &env, &test_session()).is_some(),
             "an embedded shell redirect into ~/.ssh/config must be flagged"
         );
     }
@@ -1159,7 +1789,7 @@ record_result("done");"#;
         let code = r#"import { text_editor } from "developer";
 text_editor({ command: "write", path: "~/.ssh/authorized_keys", file_text: "ssh-rsa AAAA" });"#;
         assert!(
-            code_writes_sensitively(code, &env).is_some(),
+            code_is_sensitive(code, &env, &test_session()).is_some(),
             "an embedded text_editor write to ~/.ssh must be flagged"
         );
     }
@@ -1171,7 +1801,7 @@ text_editor({ command: "write", path: "~/.ssh/authorized_keys", file_text: "ssh-
 const c = text_editor({ command: "view", path: "/etc/hosts" });
 record_result(c);"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "a view of /etc/hosts must not be flagged"
         );
     }
@@ -1201,7 +1831,7 @@ Every concept doc's type is one of the 28.
 ` });
 record_result("done");"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "markdown prose with <type>/<slug> placeholders must not be flagged as a root write"
         );
     }
@@ -1227,9 +1857,9 @@ for (const page of pages) {
   record_result(`wrote ${filename}`);
 }"##;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "a KB page write beside an unrelated split(\"/\") must NOT be flagged, got {:?}",
-            code_writes_sensitively(code, &env)
+            code_is_sensitive(code, &env, &test_session())
         );
     }
 
@@ -1242,7 +1872,7 @@ for (const page of pages) {
         let code = r#"import { kb_write_page } from "knowledge";
 kb_write_page({ path: page.path.split("/").pop(), body: text });"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "a literal inside a nested call is that call's argument, not the outer write target"
         );
     }
@@ -1260,7 +1890,7 @@ kb_write_page({ path: page.path.split("/").pop(), body: text });"#;
             r#"files__write_file({ path: page.dir.split("/").pop(), output_path: "/etc/shadow" });"#,
         ] {
             assert!(
-                code_writes_sensitively(code, &env).is_some(),
+                code_is_sensitive(code, &env, &test_session()).is_some(),
                 "a sensitive path in the mutating call's own argument must be flagged: {code}"
             );
         }
@@ -1277,7 +1907,7 @@ kb_write_page({ path: page.path.split("/").pop(), body: text });"#;
   body: "Rotate the key stored at ~/.ssh/id_ed25519, then reload /etc/ssh/sshd_config.",
 });"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "a sensitive path named in prose content is not a write to it"
         );
     }
@@ -1383,7 +2013,7 @@ const files = shell({ command: "ls -la /tmp" });
 text_editor({ command: "write", path: "/tmp/out.txt", file_text: files });
 record_result("ok");"#;
         assert!(
-            code_writes_sensitively(code, &env).is_none(),
+            code_is_sensitive(code, &env, &test_session()).is_none(),
             "ordinary /tmp scratch work must not be flagged"
         );
     }
@@ -1479,5 +2109,793 @@ record_result("ok");"#;
                 "{mode:?} must be inert (no sensitive-ops result), got {results:?}"
             );
         }
+    }
+
+    // --- criterion 5: recursive deletion of an established directory -------
+    //
+    // The incident these pin: in Auto mode an agent ran
+    // `cd ~/Desktop && rm -rf kdps-build && mkdir …` and destroyed an unpushed
+    // git repository with no prompt of any kind. Criteria 1-4 were silent
+    // because they only ask *where* a path is, and `~/Desktop/kdps-build` is
+    // `Blast::Ordinary`.
+
+    use crate::session::Session;
+    use std::path::PathBuf;
+
+    /// A scratch tree **outside** the OS temp trees.
+    ///
+    /// Criterion 5 deliberately exempts `/tmp` and `$TMPDIR`, so a `TempDir`
+    /// fixture would exercise the exemption rather than the rule — it would pass
+    /// for a gate that had been deleted. The build directory is the nearest
+    /// always-writable location that is not scratch space by policy.
+    struct Scratch {
+        root: PathBuf,
+    }
+
+    impl Scratch {
+        fn new() -> Self {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/sensitive-ops-tests")
+                .join(Uuid::new_v4().simple().to_string());
+            std::fs::create_dir_all(&root).expect("scratch root");
+            let root = root.canonicalize().expect("canonical scratch root");
+            assert!(
+                !is_temp_path(&root.to_string_lossy()),
+                "the fixture root must not be a temp path, or it tests the exemption: {}",
+                root.display()
+            );
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+
+        fn dir(&self, name: &str) -> PathBuf {
+            let dir = self.root.join(name);
+            std::fs::create_dir_all(&dir).expect("fixture directory");
+            dir
+        }
+
+        /// A directory holding `files` ordinary files.
+        fn populated(&self, name: &str, files: usize) -> PathBuf {
+            let dir = self.dir(name);
+            for i in 0..files {
+                std::fs::write(dir.join(format!("f{i}.txt")), "content").expect("fixture file");
+            }
+            dir
+        }
+
+        /// A directory that is a git repository (a `.git` beside its content).
+        fn repo(&self, name: &str) -> PathBuf {
+            let dir = self.populated(name, 3);
+            std::fs::create_dir_all(dir.join(".git")).expect("fixture .git");
+            std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").expect("fixture HEAD");
+            dir
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// A session that began *after* the fixtures were written. Fixtures are
+    /// created milliseconds ago, so dating the session into the future is the
+    /// deterministic way to make them "pre-existing" without reaching for a
+    /// mtime-rewriting dependency — it states exactly the property the rule
+    /// reads (content that predates the session).
+    fn started_after_fixtures() -> SystemTime {
+        SystemTime::now() + Duration::from_secs(600)
+    }
+
+    /// Run the shell-command half of the classifier against the host filesystem.
+    fn shell_finding(command: &str, session: &CallSession<'_>) -> Option<String> {
+        let env = EnvFacts::host(&session.working_dir().to_string_lossy());
+        command_is_sensitive(command, &env, session)
+    }
+
+    fn mkdir_history(id: &str, path: &Path) -> Vec<Message> {
+        vec![Message::assistant().with_tool_request(
+            id,
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(args(
+                    json!({ "command": format!("mkdir -p {}", path.display()) }),
+                )),
+                meta: None,
+            }),
+        )]
+    }
+
+    #[test]
+    fn recursive_delete_of_a_pre_existing_non_empty_directory_asks() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("analysis", 4);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+
+        let finding = shell_finding(&format!("rm -rf {}", victim.display()), &session)
+            .expect("a populated, pre-session directory must be escalated");
+        assert!(
+            finding.contains("recursively deletes") && finding.contains("4 files"),
+            "the prompt must name what would be destroyed, got: {finding}"
+        );
+        assert!(
+            finding.contains(&victim.to_string_lossy().to_string()),
+            "the prompt must name the absolute path, got: {finding}"
+        );
+    }
+
+    #[test]
+    fn recursive_delete_of_a_directory_this_session_created_does_not_ask() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("scratch-build", 4);
+        let command = format!("rm -rf {}", victim.display());
+
+        // Control: the identical fixture and command WITHOUT the history is
+        // escalated, so the exemption below is the provenance doing the work
+        // rather than the fixture never having matched.
+        let no_history = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert!(shell_finding(&command, &no_history).is_some());
+
+        let history = mkdir_history("req_mkdir", &victim);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &history, &[]);
+        assert_eq!(
+            shell_finding(&command, &session),
+            None,
+            "a directory an earlier call in this session created is the session's own work"
+        );
+    }
+
+    /// The provenance rule must not let a call vouch for *itself*: the incident
+    /// arrived as `rm -rf X && mkdir X`, so reading the batch under inspection as
+    /// history would have excused the very deletion it is meant to catch.
+    #[test]
+    fn a_mkdir_in_the_same_call_is_not_provenance_for_its_own_delete() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("kdps-build", 2);
+        let command = format!("rm -rf {v} && mkdir {v}", v = victim.display());
+
+        // Even with that exact call already recorded in the conversation, the id
+        // under inspection is skipped.
+        let history = vec![Message::assistant().with_tool_request(
+            "req_now",
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(args(json!({ "command": command.clone() }))),
+                meta: None,
+            }),
+        )];
+        let current = vec!["req_now".to_string()];
+        let session =
+            CallSession::new(scratch.path(), started_after_fixtures(), &history, &current);
+
+        assert!(
+            shell_finding(&command, &session).is_some(),
+            "a delete must not be excused by a mkdir in the same tool call"
+        );
+    }
+
+    #[test]
+    fn recursive_delete_of_an_empty_directory_does_not_ask() {
+        let scratch = Scratch::new();
+        let empty = scratch.dir("empty");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+
+        let command = format!("rm -rf {}", empty.display());
+        assert_eq!(
+            shell_finding(&command, &session),
+            None,
+            "an empty directory holds nothing to lose"
+        );
+
+        // Control: one file in the same directory and it is escalated, so
+        // emptiness is the only thing that changed.
+        std::fs::write(empty.join("one.txt"), "x").expect("fixture file");
+        assert!(shell_finding(&command, &session).is_some());
+    }
+
+    #[test]
+    fn a_missing_path_a_plain_file_and_a_symlink_do_not_ask() {
+        let scratch = Scratch::new();
+        let real = scratch.populated("real", 2);
+        let file = scratch.path().join("notes.txt");
+        std::fs::write(&file, "hello").expect("fixture file");
+        let link = scratch.path().join("link-to-real");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).expect("fixture symlink");
+
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        let mut targets = vec![scratch.path().join("does-not-exist"), file];
+        if cfg!(unix) {
+            // `rm -rf` on a symlink unlinks the link, never the tree behind it.
+            targets.push(link);
+        }
+        for target in targets {
+            assert_eq!(
+                shell_finding(&format!("rm -rf {}", target.display()), &session),
+                None,
+                "{} is not an established directory",
+                target.display()
+            );
+        }
+        // Control: the directory the symlink points at IS escalated when named
+        // directly, so the symlink exemption is about the link, not the tree.
+        assert!(shell_finding(&format!("rm -rf {}", real.display()), &session).is_some());
+    }
+
+    /// The `cd`-then-relative shape the incident actually arrived in. Resolving
+    /// against the session working directory instead would miss it entirely.
+    #[test]
+    fn a_relative_target_after_cd_resolves_against_the_cd_and_asks() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("kdps-build", 3);
+        // The session's own working directory is somewhere else entirely.
+        let elsewhere = scratch.dir("workspace");
+        let session = CallSession::new(&elsewhere, started_after_fixtures(), &[], &[]);
+
+        let finding = shell_finding(
+            &format!(
+                "cd {} && rm -rf kdps-build && mkdir kdps-build",
+                scratch.path().display()
+            ),
+            &session,
+        )
+        .expect("the target must resolve through the cd");
+        assert!(
+            finding.contains(&victim.to_string_lossy().to_string()),
+            "the resolved path must be the cd'd one, got: {finding}"
+        );
+    }
+
+    /// A target that holds a git repository is escalated on that evidence alone —
+    /// here the session start is *now*, so the age heuristic says every file is
+    /// the session's own work and only the `.git` speaks. Destroying history is
+    /// unrecoverable in a way that losing a working tree is not, and that is
+    /// precisely what the incident destroyed.
+    #[test]
+    fn a_target_containing_a_git_repository_asks_even_when_the_age_is_ambiguous() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("kdps-build");
+        let session = CallSession::new(scratch.path(), SystemTime::now(), &[], &[]);
+
+        let finding = shell_finding(&format!("rm -rf {}", repo.display()), &session)
+            .expect("a git repository must be escalated");
+        assert!(
+            finding.contains("contains a git repository"),
+            "the prompt must say a repository is at stake, got: {finding}"
+        );
+    }
+
+    /// The same fixture, with the session on record as having created it: a repo
+    /// the agent cloned or initialised itself is its own work, and tearing it
+    /// down must stay silent.
+    #[test]
+    fn a_git_repository_this_session_cloned_does_not_ask() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("cloned");
+        let history = vec![Message::assistant().with_tool_request(
+            "req_clone",
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(args(json!({
+                    "command": format!(
+                        "cd {} && git clone https://example.org/cloned.git",
+                        scratch.path().display()
+                    )
+                }))),
+                meta: None,
+            }),
+        )];
+        let command = format!("rm -rf {}", repo.display());
+
+        // Control: without the clone in the history this same repository is
+        // escalated (it is the `.git` fixture the positive test uses).
+        let no_history = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert!(shell_finding(&command, &no_history).is_some());
+
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &history, &[]);
+        assert_eq!(
+            shell_finding(&command, &session),
+            None,
+            "a repository this session cloned is not the user's work"
+        );
+    }
+
+    /// The false-positive guard the rule lives or dies by. An agent in Auto mode
+    /// clears build output constantly; a prompt on every one of these would get
+    /// Auto mode switched off, which is a worse outcome than the hole.
+    #[test]
+    fn regenerable_build_and_dependency_directories_do_not_ask() {
+        let scratch = Scratch::new();
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        for name in [
+            "node_modules",
+            "target",
+            "dist",
+            "build",
+            "__pycache__",
+            ".venv",
+        ] {
+            let dir = scratch.populated(name, 3);
+            assert_eq!(
+                shell_finding(&format!("rm -rf {}", dir.display()), &session),
+                None,
+                "clearing {name} must not prompt"
+            );
+        }
+        // Control: the identical fixture under a name nobody regenerates IS
+        // escalated, so the exemption is the name list, not an inert rule.
+        let user_work = scratch.populated("manuscript-figures", 3);
+        assert!(shell_finding(&format!("rm -rf {}", user_work.display()), &session).is_some());
+    }
+
+    /// …but a repository is never build output, whatever it is called.
+    #[test]
+    fn a_regenerable_name_holding_a_repository_still_asks() {
+        let scratch = Scratch::new();
+        let dir = scratch.repo("build");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert!(
+            shell_finding(&format!("rm -rf {}", dir.display()), &session).is_some(),
+            "the name exemption must not launder a git repository"
+        );
+    }
+
+    /// Content the session itself produced is not the user's work: a tree built
+    /// and torn down inside one session must never prompt.
+    #[test]
+    fn a_directory_whose_content_postdates_the_session_does_not_ask() {
+        let scratch = Scratch::new();
+        let dir = scratch.populated("results", 5);
+        let command = format!("rm -rf {}", dir.display());
+
+        // Control: dating the session *after* the same fixtures escalates it.
+        let older = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert!(shell_finding(&command, &older).is_some());
+
+        // The session began before the fixtures existed.
+        let session = CallSession::new(
+            scratch.path(),
+            SystemTime::now() - Duration::from_secs(600),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            shell_finding(&command, &session),
+            None,
+            "a tree produced during the session is the session's own output"
+        );
+    }
+
+    /// The temp trees stay scratch space, exactly as they are for criteria 1-4.
+    #[test]
+    fn a_recursive_delete_inside_a_temp_tree_does_not_ask() {
+        let temp = std::env::temp_dir().join(format!("sens-ops-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&temp).expect("temp fixture");
+        std::fs::write(temp.join("a.txt"), "x").expect("temp file");
+        std::fs::create_dir_all(temp.join(".git")).expect("temp .git");
+
+        let session = CallSession::new(Path::new("/"), started_after_fixtures(), &[], &[]);
+        let finding = shell_finding(&format!("rm -rf {}", temp.display()), &session);
+
+        // Control: the same shape outside the temp trees IS escalated, so this
+        // asserts the exemption rather than a rule that never fires.
+        let scratch = Scratch::new();
+        let outside = scratch.repo("same-shape");
+        let control = shell_finding(&format!("rm -rf {}", outside.display()), &session);
+
+        let _ = std::fs::remove_dir_all(&temp);
+        assert!(control.is_some());
+        assert_eq!(
+            finding, None,
+            "the OS temp trees are ordinary scratch space"
+        );
+    }
+
+    #[test]
+    fn reads_of_an_established_directory_never_escalate() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("analysis");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        for verb in ["ls -la", "cat", "grep -r x", "du -sh", "find"] {
+            let command = format!("{verb} {}", victim.display());
+            assert_eq!(
+                shell_finding(&command, &session),
+                None,
+                "`{command}` is a read and must never escalate"
+            );
+        }
+        // Control: the same path under a recursive delete IS escalated, so this
+        // is about the verb rather than about an unmatched fixture.
+        assert!(shell_finding(&format!("rm -rf {}", victim.display()), &session).is_some());
+    }
+
+    /// A non-recursive delete destroys nothing this criterion is about: `rm -f`
+    /// on a directory fails, and `rmdir` refuses a non-empty one.
+    #[test]
+    fn a_non_recursive_delete_does_not_ask() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("analysis");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        for command in ["rm -f", "rm", "rmdir", "mv"] {
+            assert_eq!(
+                shell_finding(&format!("{command} {}", victim.display()), &session),
+                None,
+                "`{command}` is not a recursive directory delete"
+            );
+        }
+        // Control: the recursive spelling of the same command on the same
+        // fixture is escalated.
+        assert!(shell_finding(&format!("rm -rf {}", victim.display()), &session).is_some());
+    }
+
+    #[test]
+    fn every_recursive_flag_spelling_is_detected() {
+        let scratch = Scratch::new();
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        for flags in [
+            "-rf",
+            "-fr",
+            "-r",
+            "-R",
+            "-Rf",
+            "--recursive",
+            "-vrf",
+            "-r -f",
+        ] {
+            let victim = scratch.populated(&format!("case{}", flags.replace([' ', '-'], "")), 2);
+            assert!(
+                shell_finding(&format!("rm {flags} {}", victim.display()), &session).is_some(),
+                "`rm {flags}` is a recursive delete"
+            );
+        }
+    }
+
+    /// `--` ends option parsing, so a *file* named `-rf` after it is an operand
+    /// and the command is not recursive at all.
+    /// Real paths have spaces in them. The tokenizer strips the quoting before
+    /// this rule sees the operand, and a target that failed to reassemble would
+    /// simply not exist on disk — a silent miss rather than a visible error.
+    #[test]
+    fn a_quoted_target_containing_spaces_is_resolved() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("My Analysis 2026", 3);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        for command in [
+            format!("rm -rf \"{}\"", victim.display()),
+            format!("rm -rf '{}'", victim.display()),
+            format!("cd \"{}\" && rm -rf \"My Analysis 2026\"", scratch.path().display()),
+        ] {
+            assert!(
+                shell_finding(&command, &session).is_some(),
+                "`{command}` names a real directory and must be escalated"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dashed_operand_after_the_end_of_options_is_not_a_recursive_flag() {
+        let scratch = Scratch::new();
+        let victim = scratch.populated("odd", 2);
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert_eq!(
+            shell_finding(&format!("rm -- -rf {}", victim.display()), &session),
+            None,
+            "after `--` a dashed token is a filename, not a recursion flag"
+        );
+        // Control: the same flag BEFORE `--` is a recursion flag.
+        assert!(shell_finding(&format!("rm -rf -- {}", victim.display()), &session).is_some());
+    }
+
+    // --- the delete parser, per dialect (pure, no filesystem) --------------
+
+    fn segments_of(command: &str, platform: Platform, dialect: Dialect) -> Vec<Segment> {
+        let env = match platform {
+            Platform::Windows => {
+                EnvFacts::for_platform(platform, r"C:\Users\me\proj", r"C:\Users\me")
+            }
+            _ => EnvFacts::for_platform(platform, "/home/me/proj", "/home/me"),
+        };
+        ParsedCommand::parse_for_dialect(command, platform, dialect, &env).segments
+    }
+
+    fn detects_recursive_delete(command: &str, platform: Platform, dialect: Dialect) -> bool {
+        segments_of(command, platform, dialect)
+            .iter()
+            .any(is_recursive_delete)
+    }
+
+    /// The Windows spellings, exercised the way the policy layer's Windows
+    /// matrix is: with the platform and dialect forced, so they run on a mac.
+    #[test]
+    fn powershell_and_cmd_recursive_deletes_are_detected() {
+        for command in [
+            r"Remove-Item -Recurse -Force C:\Users\me\proj\data",
+            r"Remove-Item -Recurse C:\Users\me\proj\data",
+            // Aliases and unambiguous parameter prefixes are canonicalized by
+            // the parser before this rule ever sees them.
+            r"ri -rec -force C:\Users\me\proj\data",
+            r"rd -Recurse C:\Users\me\proj\data",
+            // `-r` is a prefix of Recurse alone in Remove-Item's parameter set.
+            r"Remove-Item -r -Force C:\Users\me\proj\data",
+        ] {
+            assert!(
+                detects_recursive_delete(command, Platform::Windows, Dialect::PowerShell),
+                "`{command}` is a recursive delete"
+            );
+        }
+        assert!(
+            !detects_recursive_delete(
+                r"Remove-Item C:\Users\me\proj\data\notes.txt",
+                Platform::Windows,
+                Dialect::PowerShell
+            ),
+            "Remove-Item without -Recurse is not a recursive directory delete"
+        );
+
+        for command in [
+            r"rd /s /q C:\Users\me\proj\data",
+            r"rmdir /S C:\Users\me\proj\data",
+        ] {
+            assert!(
+                detects_recursive_delete(command, Platform::Windows, Dialect::Cmd),
+                "`{command}` is a recursive delete"
+            );
+        }
+        assert!(
+            !detects_recursive_delete(
+                r"rd /q C:\Users\me\proj\data",
+                Platform::Windows,
+                Dialect::Cmd
+            ),
+            "`rd` without /s only removes an empty directory"
+        );
+    }
+
+    /// A PowerShell command reached through `pwsh -c` on a POSIX host is parsed
+    /// in the PowerShell dialect, so criterion 5 sees it there too.
+    #[cfg(unix)]
+    #[test]
+    fn a_powershell_delete_invoked_through_pwsh_is_escalated() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("analysis");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        assert!(
+            shell_finding(
+                &format!(
+                    "pwsh -c \"Remove-Item -Recurse -Force {}\"",
+                    victim.display()
+                ),
+                &session
+            )
+            .is_some(),
+            "a PowerShell recursive delete must be escalated wherever it is hosted"
+        );
+    }
+
+    /// The `cd` tracker is a pure property of the command text, so pin it
+    /// directly rather than only through a filesystem fixture.
+    #[test]
+    fn delete_targets_follow_cd_across_a_command_line() {
+        let env = nix_env();
+        let targets = recursive_delete_targets("cd /a/b && rm -rf c", &env);
+        assert_eq!(
+            targets.iter().map(|t| t.norm.as_str()).collect::<Vec<_>>(),
+            vec!["/a/b/c"],
+            "a relative target must resolve against the cd, not the session cwd"
+        );
+
+        // A `cd` only affects what follows it.
+        let targets = recursive_delete_targets("rm -rf early && cd /a/b && rm -rf late", &env);
+        assert_eq!(
+            targets.iter().map(|t| t.norm.as_str()).collect::<Vec<_>>(),
+            vec!["/home/me/proj/early", "/a/b/late"]
+        );
+    }
+
+    #[test]
+    fn directory_creation_targets_cover_the_common_makers() {
+        let env = nix_env();
+        for (command, expected) in [
+            ("mkdir out", "/home/me/proj/out"),
+            ("mkdir -p a/b/c", "/home/me/proj/a/b/c"),
+            (
+                "git clone https://example.org/thing.git",
+                "/home/me/proj/thing",
+            ),
+            (
+                "git clone https://example.org/thing.git dest",
+                "/home/me/proj/dest",
+            ),
+            ("git init fresh", "/home/me/proj/fresh"),
+            ("git worktree add wt-1", "/home/me/proj/wt-1"),
+            ("cargo new pkg", "/home/me/proj/pkg"),
+            ("cd /a/b && mkdir made-here", "/a/b/made-here"),
+        ] {
+            let norms: Vec<String> = directory_creation_targets(command, &env)
+                .into_iter()
+                .map(|t| t.norm)
+                .collect();
+            assert!(
+                norms.iter().any(|n| n == expected),
+                "`{command}` should record {expected}, got {norms:?}"
+            );
+        }
+        // A bare `git init` does not bring its directory into existence.
+        assert!(directory_creation_targets("git init", &env).is_empty());
+    }
+
+    /// The `execute_code` path: an embedded delete reaches the same rule, because
+    /// a script's inner tool calls never pass an agent-layer inspector.
+    #[test]
+    fn an_execute_code_body_hiding_a_recursive_delete_is_escalated() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("analysis");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        let env = EnvFacts::host(&scratch.path().to_string_lossy());
+        let code = format!(
+            "import {{ shell }} from \"developer\";\nshell({{ command: `rm -rf {}` }});",
+            victim.display()
+        );
+        assert!(
+            code_is_sensitive(&code, &env, &session).is_some(),
+            "a recursive delete hidden in an execute_code body must be escalated"
+        );
+    }
+
+    // --- the inspector, end to end ----------------------------------------
+
+    fn shell_request(id: &str, command: &str) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(args(json!({ "command": command }))),
+                meta: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    fn session_at(working_dir: &Path, created_at: chrono::DateTime<chrono::Utc>) -> Session {
+        Session {
+            working_dir: working_dir.to_path_buf(),
+            created_at,
+            ..Session::default()
+        }
+    }
+
+    /// The incident, end to end: the exact command, in the exact mode, now
+    /// produces an approval request naming what it would destroy.
+    #[tokio::test]
+    async fn auto_mode_routes_the_incident_command_to_approval() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("kdps-build");
+        let workspace = scratch.dir("workspace");
+        let command = format!(
+            "cd {} && rm -rf kdps-build && mkdir kdps-build",
+            scratch.path().display()
+        );
+
+        let results = SensitiveOpsInspector
+            .inspect(
+                &[shell_request("req_rm", &command)],
+                &[],
+                BioRouterMode::Auto,
+                &session_at(
+                    &workspace,
+                    chrono::Utc::now() + chrono::Duration::seconds(600),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let result = results
+            .iter()
+            .find(|r| r.tool_request_id == "req_rm")
+            .expect("the incident command must be escalated");
+        let InspectionAction::RequireApproval(Some(prompt)) = &result.action else {
+            panic!("expected an approval prompt, got {:?}", result.action);
+        };
+        assert!(
+            prompt.contains(&victim.to_string_lossy().to_string())
+                && prompt.contains("contains a git repository"),
+            "the prompt must name the path and the repository, got: {prompt}"
+        );
+        assert_eq!(result.inspector_name, SENSITIVE_OPS_INSPECTOR_NAME);
+    }
+
+    /// Gate (c) for criterion 5: every non-Auto mode stays inert, for every
+    /// spelling — the same early return that keeps criteria 1-4 out of them.
+    #[tokio::test]
+    async fn criterion_five_is_inert_outside_auto_mode() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("kdps-build");
+        let plain = scratch.populated("analysis", 4);
+        let workspace = scratch.dir("workspace");
+        let session = session_at(
+            &workspace,
+            chrono::Utc::now() + chrono::Duration::seconds(600),
+        );
+
+        let commands = [
+            format!("rm -rf {}", repo.display()),
+            format!("rm -r {}", plain.display()),
+            format!("rm --recursive {}", plain.display()),
+            format!("cd {} && rm -rf kdps-build", scratch.path().display()),
+            format!("pwsh -c \"Remove-Item -Recurse -Force {}\"", repo.display()),
+        ];
+        let requests: Vec<ToolRequest> = commands
+            .iter()
+            .enumerate()
+            .map(|(i, c)| shell_request(&format!("req_{i}"), c))
+            .collect();
+
+        // Each one really is escalated in Auto, so inertness elsewhere is a
+        // statement about the mode gate rather than about a fixture that never
+        // matched.
+        let auto = SensitiveOpsInspector
+            .inspect(&requests, &[], BioRouterMode::Auto, &session)
+            .await
+            .unwrap();
+        assert_eq!(
+            auto.len(),
+            requests.len(),
+            "every spelling must be escalated in Auto, got {auto:?}"
+        );
+
+        for mode in [
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+            BioRouterMode::Chat,
+        ] {
+            let results = SensitiveOpsInspector
+                .inspect(&requests, &[], mode, &session)
+                .await
+                .unwrap();
+            assert!(
+                results.is_empty(),
+                "{mode:?} must be inert for criterion 5, got {results:?}"
+            );
+        }
+    }
+
+    /// Reads of the same paths never escalate in any mode, Auto included.
+    #[tokio::test]
+    async fn auto_mode_leaves_reads_of_an_established_directory_alone() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("kdps-build");
+        let workspace = scratch.dir("workspace");
+        let requests: Vec<ToolRequest> = ["ls -la", "cat", "grep -r pattern"]
+            .iter()
+            .enumerate()
+            .map(|(i, verb)| {
+                shell_request(&format!("req_{i}"), &format!("{verb} {}", repo.display()))
+            })
+            .collect();
+
+        let results = SensitiveOpsInspector
+            .inspect(
+                &requests,
+                &[],
+                BioRouterMode::Auto,
+                &session_at(
+                    &workspace,
+                    chrono::Utc::now() + chrono::Duration::seconds(600),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "reading a directory must never escalate, got {results:?}"
+        );
     }
 }
