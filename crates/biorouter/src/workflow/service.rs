@@ -375,6 +375,29 @@ pub async fn session_enrichment(
         .get_extension_configs()
         .await
         .into_iter()
+        // ⚠ REDACT BEFORE ENRICH, and never the other way round.
+        //
+        // A generated workflow leaves the machine twice, and both exits are
+        // silent. `generate` returns the rendered YAML as TOOL CONTENT, so the
+        // whole document is appended to the conversation and shipped to the
+        // model provider on the next request — including a `claude_code` or
+        // `codex` child on a consumer plan with no BAA. And `save` writes it in
+        // plaintext to the workflow library, which is the thing users mail to
+        // each other.
+        //
+        // The live config carries resolved connector auth: `StreamableHttp`
+        // holds `headers` (a `Bearer` token typed into Settings -> Extensions is
+        // stored verbatim, never keyring-migrated), `Stdio` holds `envs`, and
+        // both hold locators that can embed credentials in userinfo. None of it
+        // is needed to re-enable an extension: a consumer matches by NAME
+        // against its own installed set, which is the only thing that could
+        // work on another machine anyway.
+        //
+        // This is the same projection `session_manager` and `extension_data`
+        // already apply when a session is exported, for the same reason. Doing
+        // it here rather than at each call site is what makes it hold for the
+        // HTTP route, the CLI and the tool at once.
+        .map(|config| config.redacted_for_session_export())
         .map(enrich_extension_description)
         .collect();
 
@@ -1059,5 +1082,93 @@ mod one_core_guards {
                  `runtime::install_prepared`; installers found: {installers:?}"
             );
         }
+    }
+
+    /// ⚠ A generated workflow leaves the machine TWICE, and both exits are
+    /// silent: `generate` returns the rendered YAML as tool content (so the
+    /// whole document is appended to the conversation and shipped to the model
+    /// provider on the next request), and `save` writes it in plaintext to the
+    /// library users mail around. The live `ExtensionConfig` carries resolved
+    /// connector auth — a `Bearer` token typed into Settings -> Extensions is
+    /// stored verbatim in `StreamableHttp::headers` and is never
+    /// keyring-migrated — so the capture must project it away BEFORE either
+    /// exit.
+    ///
+    /// This guards the choke point rather than the symptom. `session_enrichment`
+    /// is documented as "the ONLY enrichment", so a redaction there holds for
+    /// the HTTP route, the CLI and the tool at once; a future refactor that
+    /// drops the call re-opens all three.
+    #[test]
+    fn the_session_capture_redacts_connector_auth_before_enriching() {
+        let text = std::fs::read_to_string(crates_dir().join("biorouter/src/workflow/service.rs"))
+            .expect("service.rs is readable");
+        let body = production(&text);
+        let capture = body
+            .split_once("pub async fn session_enrichment")
+            .expect("session_enrichment exists")
+            .1;
+        let capture = capture
+            .split_once("\n}\n")
+            .map_or(capture, |(inside, _)| inside);
+        assert!(
+            capture.contains("redacted_for_session_export"),
+            "`session_enrichment` must project connector auth out of the captured \n\
+             extension configs before they reach a generated workflow. Without it a \n\
+             live Authorization header rides the YAML to the model provider and into \n\
+             a shareable file. Body seen:\n{capture}"
+        );
+
+        let agent = std::fs::read_to_string(crates_dir().join("biorouter/src/agents/agent.rs"))
+            .expect("agent.rs is readable");
+        let agent_body = production(&agent);
+        let create = agent_body
+            .split_once("pub async fn create_workflow")
+            .expect("create_workflow exists")
+            .1;
+        assert!(
+            create
+                .split_once("let author")
+                .map_or(create, |(before, _)| before)
+                .contains("redacted_for_session_export"),
+            "`Agent::create_workflow` sets `extensions` itself before any \n\
+             enrichment runs, so a caller that does not enrich (the CLI did not) \n\
+             would ship the unredacted set on its own."
+        );
+    }
+
+    /// The projection is only worth guarding if it actually removes the secret,
+    /// so pin that too — against a config shaped like the one Settings writes.
+    #[test]
+    fn the_projection_drops_a_bearer_token_from_the_rendered_yaml() {
+        use crate::agents::extension::ExtensionConfig;
+        use std::collections::HashMap;
+
+        const TOKEN: &str = "Bearer eyJhbGciOi-SECRET-DO-NOT-SHIP";
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), TOKEN.to_string());
+
+        let live = ExtensionConfig::StreamableHttp {
+            name: "internal-agent".to_string(),
+            description: "an internal connector".to_string(),
+            uri: "https://internal.example/mcp".to_string(),
+            envs: Default::default(),
+            env_keys: vec![],
+            headers,
+            timeout: Some(300),
+            bundled: None,
+            available_tools: vec![],
+        };
+
+        let rendered = serde_yaml::to_string(&live.redacted_for_session_export())
+            .expect("a redacted config serializes");
+        assert!(
+            !rendered.contains(TOKEN) && !rendered.contains("eyJhbGciOi"),
+            "the redacted projection still carries the bearer token:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("internal-agent"),
+            "redaction must keep the NAME — a consumer re-enables by matching it \n\
+             against its own installed set:\n{rendered}"
+        );
     }
 }
