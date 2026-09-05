@@ -11415,12 +11415,18 @@ impl Agent {
             metadata: None,
         };
 
-        // Ideally we'd get the name of the provider we are using from the provider itself,
-        // but it doesn't know and the plumbing looks complicated.
-        let config = Config::global();
-        let provider_name: String = config
-            .get_biorouter_provider()
-            .expect("No provider configured. Run 'biorouter configure' first");
+        // The provider knows its own name — `Provider::get_name()`, used three
+        // times elsewhere in this file. The comment that used to sit here said
+        // it "doesn't know and the plumbing looks complicated", and that was
+        // simply false; the workaround it justified read the MACHINE-DEFAULT
+        // provider while the model name a few lines above came from the SESSION
+        // provider, so a rebound session emitted a provider/model pair that had
+        // never coexisted.
+        //
+        // It also `.expect()`ed, inside a path an axum handler awaits: a daemon
+        // with no configured default panicked the request rather than answering
+        // it.
+        let provider_name = provider.get_name().to_string();
 
         let settings = Settings {
             biorouter_provider: Some(provider_name.clone()),
@@ -11470,6 +11476,36 @@ impl Agent {
             })
             .unwrap_or_default();
 
+        // `prompt` and `parameters` are what make a generated workflow runnable
+        // rather than merely readable: without a prompt it cannot run headless
+        // at all, and without parameters it is pinned to this conversation's
+        // specific values. The generator was never asked for either, so no
+        // generated workflow had ever had them.
+        let prompt = json_content
+            .as_ref()
+            .and_then(|json| json.get("prompt"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(ToString::to_string);
+
+        // A malformed parameter list must not lose the whole workflow: the
+        // instructions and activities are the expensive part and are already
+        // parsed. Drop the parameters, say so, keep the rest.
+        let parameters = json_content
+            .as_ref()
+            .and_then(|json| json.get("parameters"))
+            .and_then(|value| {
+                serde_json::from_value::<Vec<crate::workflow::WorkflowParameter>>(value.clone())
+                    .map_err(|err| {
+                        tracing::warn!(
+                            "Dropping generated workflow parameters that did not parse: {err}"
+                        );
+                    })
+                    .ok()
+            })
+            .filter(|parameters: &Vec<_>| !parameters.is_empty());
+
         let mut workflow_builder = Workflow::builder()
             .title(title)
             .description(description)
@@ -11481,6 +11517,12 @@ impl Agent {
 
         if !skills.is_empty() {
             workflow_builder = workflow_builder.skills(skills);
+        }
+        if let Some(prompt) = prompt {
+            workflow_builder = workflow_builder.prompt(prompt);
+        }
+        if let Some(parameters) = parameters {
+            workflow_builder = workflow_builder.parameters(parameters);
         }
 
         let workflow = workflow_builder.build().map_err(|e| {

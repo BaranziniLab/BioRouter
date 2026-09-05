@@ -385,7 +385,43 @@ pub async fn workflow_skill_instructions(
     let skills = catalog.skills();
     let mut rendered = String::new();
 
-    for name in requested {
+    // A workflow may name a BUNDLE as well as a skill, and both arrive in the
+    // same `skills:` list.
+    //
+    // That is not a convenience — it is what the workflow resource picker has
+    // always written. It offers bundle rows (`id: bundle.name, badge: 'bundle'`)
+    // beside skill rows, merges the two and stores the selection in
+    // `workflow.skills`; resolving names against `view.skills` alone answered
+    // "workflow requires skill '<bundle>', but it is not installed" for every
+    // one of them. It went unnoticed because the only bundle on a stock machine
+    // is `knowledge-bases`, which is a Context, and `pickerBundles` strips
+    // Contexts before a row renders — so the feature has never worked and could
+    // not fail either, until an extension-bundled skill pack (BiorOffice's four
+    // office skills) provides the first non-Context bundle. Which is precisely
+    // the case #113 added it for.
+    let expanded: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for name in requested {
+            match view.bundles.iter().find(|bundle| bundle.name == *name) {
+                Some(bundle) => {
+                    if bundle.skills.is_empty() {
+                        anyhow::bail!(
+                            "workflow requires the skill bundle '{name}', but it contains no skills"
+                        );
+                    }
+                    out.extend(bundle.skills.iter().cloned());
+                }
+                None => out.push(name.clone()),
+            }
+        }
+        // A workflow naming a bundle AND one of its members must not inline that
+        // member's body twice.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|name| seen.insert(name.clone()));
+        out
+    };
+
+    for name in &expanded {
         let visible = view
             .skills
             .iter()
@@ -5262,6 +5298,85 @@ Working dir biorouter content
         .unwrap();
         let error =
             workflow_skill_instructions(&manager, &session.id, &["required-procedure".to_string()])
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("disabled"), "{error:#}");
+
+        skill_catalog::invalidate();
+    }
+
+    /// A workflow may name a BUNDLE, and every member's body is inlined.
+    ///
+    /// ⚠ The fixture has a NON-EMPTY bundle, and that is the whole point. The
+    /// workflow resource picker has always offered bundle rows and written the
+    /// chosen bundle's name into `workflow.skills`, and this resolver matched
+    /// names against `view.skills` alone — so every such workflow failed with
+    /// "requires skill '<bundle>', but it is not installed". Nothing caught it:
+    /// the only bundle on a stock machine is the `knowledge-bases` Context,
+    /// which `pickerBundles` strips before a row renders, and the modal's own
+    /// test fixture passes `bundles: []`. A fixture with no bundles cannot
+    /// falsify a claim about bundles.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workflow_may_require_a_whole_bundle() {
+        let temp = TempDir::new().unwrap();
+        let _env =
+            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let bundle = Paths::config_dir().join("skills").join("office-pack");
+        for (name, body) in [("write-docx", "DOCX-BODY"), ("write-xlsx", "XLSX-BODY")] {
+            let dir = bundle.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name} procedure\n---\n\n{body}"),
+            )
+            .unwrap();
+        }
+        skill_catalog::invalidate();
+
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "bundle workflow test".into(),
+                crate::session::SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+
+        let rendered =
+            workflow_skill_instructions(&manager, &session.id, &["office-pack".to_string()])
+                .await
+                .expect("a bundle name must resolve, not error as a missing skill");
+        assert!(rendered.contains("DOCX-BODY"), "{rendered}");
+        assert!(rendered.contains("XLSX-BODY"), "{rendered}");
+
+        // Naming the bundle AND one of its members must not inline it twice.
+        let both = workflow_skill_instructions(
+            &manager,
+            &session.id,
+            &["office-pack".to_string(), "write-docx".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            both.matches("DOCX-BODY").count(),
+            1,
+            "a member named alongside its bundle is inlined once: {both}"
+        );
+
+        // A member disabled for this conversation still stops the run — the
+        // bundle expansion must not become a way around the strictness this
+        // resolver exists to enforce.
+        crate::agents::session_skills::apply(
+            &manager,
+            &session.id,
+            &[],
+            &["write-docx".to_string()],
+        )
+        .await
+        .unwrap();
+        let error =
+            workflow_skill_instructions(&manager, &session.id, &["office-pack".to_string()])
                 .await
                 .unwrap_err();
         assert!(error.to_string().contains("disabled"), "{error:#}");

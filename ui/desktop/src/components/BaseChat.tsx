@@ -1742,22 +1742,6 @@ function BaseChatContent({
     return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
   }, [sessionId]);
 
-  // NOTE: as of this writing 'make-agent-from-chat' has NO dispatcher anywhere in
-  // ui/desktop (only this listener and the one in hooks/useWorkflowManager.ts:284)
-  // — it appears to be dead code. It is session-scoped here for consistency with
-  // the other two broadcast listeners rather than deleted, because removing it is
-  // out of scope; without a dispatcher the filter is inert either way.
-  useEffect(() => {
-    const handleMakeAgent = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
-      if (!isEventForSession(detail, sessionId)) return;
-      setIsCreateWorkflowModalOpen(true);
-    };
-
-    window.addEventListener('make-agent-from-chat', handleMakeAgent);
-    return () => window.removeEventListener('make-agent-from-chat', handleMakeAgent);
-  }, [sessionId]);
-
   // Match on the ORIGIN session, not detail.newSessionId. Diverging creates a
   // brand-new session, so newSessionId belongs to no mounted BaseChat — filtering
   // on it would match nobody. detail.sessionId is the session the user actually
