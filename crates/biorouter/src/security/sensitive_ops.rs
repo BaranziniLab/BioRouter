@@ -434,6 +434,8 @@ pub struct CallSession<'a> {
     messages: &'a [Message],
     current_request_ids: &'a [String],
     created_dirs: OnceCell<HashSet<String>>,
+    /// The replay-proof subset. See [`strongly_created_dir_operands`].
+    strongly_created_dirs: OnceCell<HashSet<String>>,
 }
 
 impl<'a> CallSession<'a> {
@@ -449,6 +451,7 @@ impl<'a> CallSession<'a> {
             messages,
             current_request_ids,
             created_dirs: OnceCell::new(),
+            strongly_created_dirs: OnceCell::new(),
         }
     }
 
@@ -472,7 +475,15 @@ impl<'a> CallSession<'a> {
     /// conversation asked to bring into existence *and actually did*.
     fn created_dirs(&self, env: &EnvFacts) -> &HashSet<String> {
         self.created_dirs
-            .get_or_init(|| self.scan_created_dirs(env))
+            .get_or_init(|| self.scan_created_dirs(env, false))
+    }
+
+    /// As [`Self::created_dirs`], but only the directories vouched for by a verb
+    /// that cannot succeed onto a populated existing tree. This is the set the
+    /// `has_git` branch must use — see [`strongly_created_dir_operands`].
+    fn strongly_created_dirs(&self, env: &EnvFacts) -> &HashSet<String> {
+        self.strongly_created_dirs
+            .get_or_init(|| self.scan_created_dirs(env, true))
     }
 
     /// The ids of the tool calls this conversation records as having actually
@@ -504,7 +515,7 @@ impl<'a> CallSession<'a> {
         out
     }
 
-    fn scan_created_dirs(&self, env: &EnvFacts) -> HashSet<String> {
+    fn scan_created_dirs(&self, env: &EnvFacts, strong_only: bool) -> HashSet<String> {
         let executed = self.executed_request_ids();
         let mut out = HashSet::new();
         for message in self.messages {
@@ -528,7 +539,7 @@ impl<'a> CallSession<'a> {
                 let Some(args) = call.arguments.as_ref() else {
                     continue;
                 };
-                collect_created_dirs(&call.name, args, env, &mut out);
+                collect_created_dirs(&call.name, args, env, strong_only, &mut out);
             }
         }
         out
@@ -751,6 +762,55 @@ fn created_dir_operands(seg: &Segment) -> Vec<String> {
     }
 }
 
+/// The operands of a segment whose verb **cannot succeed onto a directory that
+/// already holds a populated repository**.
+///
+/// ⚠ This is the narrower sibling of [`created_dir_operands`], and the
+/// difference is the whole point. The wide list above is safe wherever the
+/// filesystem is also consulted, because a tree the session really made holds
+/// no pre-session content and the age test alone answers. It is NOT safe in the
+/// one shape where the age test cannot answer — a directory bearing a `.git`
+/// whose every entry post-dates the session — because `mkdir -p <existing repo>`
+/// and `git init <existing repo>` both **succeed while creating nothing**. A
+/// model whose `rm -rf <repo>` was refused could issue either one, get a real
+/// success response, and retry into a silent recursive delete: the denied
+/// operation minting its own permission, which is exactly the hole criterion 5
+/// exists to close.
+///
+/// So for that case provenance is restricted to verbs that FAIL on a populated
+/// existing directory, and therefore cannot be replayed over the victim:
+/// `git clone`, `git worktree add`, `cargo new`. `git init` and every bare
+/// `mkdir` spelling are deliberately absent.
+fn strongly_created_dir_operands(seg: &Segment) -> Vec<String> {
+    let binary = seg.binary.to_ascii_lowercase();
+    let operands = segment_operands(seg);
+    match binary.as_str() {
+        "git" => match operands.split_first() {
+            Some((sub, rest)) if sub == "clone" => match rest {
+                [] => Vec::new(),
+                [url] => clone_dir_from_url(url).into_iter().collect(),
+                [_url, dir, ..] => vec![dir.clone()],
+            },
+            Some((sub, rest)) if sub == "worktree" => match rest.split_first() {
+                Some((add, tail)) if add == "add" => tail.first().cloned().into_iter().collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        },
+        // `cargo new` refuses an existing directory; `cargo init` does not.
+        "cargo" => match operands.split_first() {
+            Some((sub, rest)) if sub == "new" => rest.first().cloned().into_iter().collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// [`directory_creation_targets`], restricted to the replay-proof verbs.
+fn strong_directory_creation_targets(command: &str, env: &EnvFacts) -> Vec<TargetPath> {
+    resolved_command_targets(command, env, strongly_created_dir_operands)
+}
+
 /// `git clone <url> [dir]`, `git init <dir>`, `git worktree add <dir>`.
 ///
 /// Worth the special case rather than left to the age heuristic: a clone the
@@ -800,9 +860,13 @@ fn collect_created_dirs(
     tool_name: &str,
     args: &Map<String, Value>,
     env: &EnvFacts,
+    strong_only: bool,
     out: &mut HashSet<String>,
 ) {
-    if tool_name_creates_directories(tool_name) {
+    // A dedicated create-directory TOOL is a structured call, not a command line
+    // the model composed — but it is still `mkdir`-shaped: it succeeds on an
+    // existing directory and so cannot vouch in the replay-proof set.
+    if !strong_only && tool_name_creates_directories(tool_name) {
         for raw in path_values(args) {
             if !raw.trim().is_empty() {
                 out.insert(normalize_for(env.platform, &raw, env).norm);
@@ -810,13 +874,19 @@ fn collect_created_dirs(
         }
     }
     if let Some(command) = command_text_from(tool_name, args) {
-        out.extend(
+        let targets = if strong_only {
+            strong_directory_creation_targets(&command, env)
+        } else {
             directory_creation_targets(&command, env)
-                .into_iter()
-                .map(|t| t.norm),
-        );
+        };
+        out.extend(targets.into_iter().map(|t| t.norm));
     }
-    if is_execute_code(tool_name) {
+    // ⚠ A string LITERAL inside an `execute_code` body is not evidence the
+    // command ran — it is evidence the model typed it. The call's success bit
+    // says the JS returned, not that any particular literal was executed, so a
+    // dead `"mkdir -p /victim"` sitting in the source would otherwise vouch.
+    // Same reasoning disqualifies it from the replay-proof set entirely.
+    if !strong_only && is_execute_code(tool_name) {
         if let Some(code) = args.get("code").and_then(Value::as_str) {
             for literal in extract_string_literals(code) {
                 out.extend(
@@ -1018,7 +1088,27 @@ fn established_directory_probe(
     // turns a denied delete into its own permission on the next turn. The
     // corroboration costs nothing where the exemption was earned: a tree the
     // session really did make has no pre-session content to find.
-    if !probe.holds_pre_session_content && session.created_dirs(env).contains(norm) {
+    //
+    // ⚠ WHICH provenance set, and why it is not the wide one. The step above
+    // returns for every NON-git directory in this state, so the only shape that
+    // reaches here is `has_git && !holds_pre_session_content` — a repository
+    // whose every entry post-dates the session. That is precisely the shape the
+    // filesystem cannot adjudicate, so the model's word is the only input left,
+    // and the wide set is forgeable in exactly one move: `mkdir -p <repo>` and
+    // `git init <repo>` both SUCCEED while creating nothing, so a refused
+    // `rm -rf <repo>` is unlocked by replaying either one and retrying. Reached
+    // easily, too: any repository created after the session opened — by the user
+    // in their own terminal, by a subagent, by `gh repo clone` or `cp -r` — is
+    // git-bearing with no pre-session content.
+    //
+    // So this branch takes only verbs that FAIL on a populated existing
+    // directory and therefore cannot be replayed over the victim.
+    let vouched = if has_git {
+        session.strongly_created_dirs(env).contains(norm)
+    } else {
+        session.created_dirs(env).contains(norm)
+    };
+    if !probe.holds_pre_session_content && vouched {
         return None;
     }
     Some(probe)
@@ -2368,7 +2458,15 @@ record_result("ok");"#;
         let no_history = CallSession::new(scratch.path(), started_before_fixtures(), &[], &[]);
         assert!(shell_finding(&command, &no_history).is_some());
 
-        let history = mkdir_history("req_mkdir", &victim);
+        // A `git clone` rather than a `mkdir`: over a REPOSITORY, provenance is
+        // restricted to verbs that cannot succeed onto a populated existing tree
+        // (see `strongly_created_dir_operands`), because there the filesystem
+        // cannot corroborate and `mkdir -p` would be replayable over the victim.
+        let history = command_history(
+            "req_clone",
+            &format!("git clone https://example.com/scratch-build.git {}", victim.display()),
+            true,
+        );
         let session = CallSession::new(scratch.path(), started_before_fixtures(), &history, &[]);
         assert_eq!(
             shell_finding(&command, &session),
@@ -2402,7 +2500,9 @@ record_result("ok");"#;
         // Control: the identical history against a directory whose content the
         // session really did produce still exempts, so the corroboration narrows
         // the exemption rather than removing it.
-        let own = scratch.repo("session-made");
+        // Non-git on purpose: over a repository a bare `mkdir` no longer vouches
+        // at all, which `a_replayed_mkdir_cannot_unlock_a_repository` pins.
+        let own = scratch.populated("session-made", 2);
         let own_history = mkdir_history("req_mkdir2", &own);
         let own_session =
             CallSession::new(scratch.path(), started_before_fixtures(), &own_history, &[]);
@@ -2434,9 +2534,63 @@ record_result("ok");"#;
 
         // Control: the same call with a successful response DOES exempt it, so
         // this asserts the outcome rather than a fixture that never matched.
-        let ran = mkdir_history("req_mkdir", &victim);
+        //
+        // ⚠ The control uses a NON-git directory deliberately. A successful
+        // `mkdir` vouches only where the filesystem can corroborate it; over a
+        // repository it proves nothing, which is what
+        // `a_replayed_mkdir_cannot_unlock_a_repository` pins.
+        let plain = scratch.populated("scratch-out", 2);
+        let plain_command = format!("rm -rf {}", plain.display());
+        let ran = mkdir_history("req_mkdir", &plain);
         let ok_session = CallSession::new(scratch.path(), started_before_fixtures(), &ran, &[]);
-        assert_eq!(shell_finding(&command, &ok_session), None);
+        assert_eq!(shell_finding(&plain_command, &ok_session), None);
+    }
+
+    /// A refused delete must not be able to mint its own permission — the whole
+    /// point of criterion 5 — and the one shape where the filesystem cannot say
+    /// so is a repository whose every entry post-dates the session.
+    ///
+    /// There, provenance is the only input left, and it is the model's word. So
+    /// it is restricted to verbs that CANNOT succeed onto a populated existing
+    /// tree. `mkdir -p` and `git init` both succeed there while creating
+    /// nothing, so replaying either one over the victim must not unlock it.
+    #[test]
+    fn a_replayed_mkdir_cannot_unlock_a_repository() {
+        let scratch = Scratch::new();
+        let victim = scratch.repo("kdps-build");
+        let command = format!("rm -rf {}", victim.display());
+        // The session opened before the repo appeared, so nothing in it predates
+        // the session and the age test cannot adjudicate: exactly the gap.
+        let started = started_before_fixtures();
+
+        for replay in ["mkdir -p", "git init"] {
+            let history = command_history(
+                "req_replay",
+                &format!("{replay} {}", victim.display()),
+                true,
+            );
+            let session = CallSession::new(scratch.path(), started, &history, &[]);
+            assert!(
+                shell_finding(&command, &session).is_some(),
+                "`{replay}` succeeds without creating anything on an existing \
+                 repository, so replaying it must not launder the delete"
+            );
+        }
+
+        // Control: a verb that genuinely cannot land on a populated existing
+        // directory still earns the exemption, so this narrows rather than
+        // disables provenance.
+        let cloned = command_history(
+            "req_clone",
+            &format!("git clone https://example.com/kdps-build.git {}", victim.display()),
+            true,
+        );
+        let clone_session = CallSession::new(scratch.path(), started, &cloned, &[]);
+        assert_eq!(
+            shell_finding(&command, &clone_session),
+            None,
+            "a repository this session cloned is still the session's own work"
+        );
     }
 
     /// The provenance rule must not let a call vouch for *itself*: the incident

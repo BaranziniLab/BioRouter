@@ -703,10 +703,17 @@ const REGISTRY: &[Guard] = &[
         status: Status::Wired,
         sites: &[Site {
             file: "crates/biorouter/src/agents/extension_manager_extension.rs",
-            counts: c(1, 0, 0),
+            counts: c(2, 0, 0),
             kind: SiteKind::Guard,
-            what: "`check_enable_allowed_impl`, shared by the ordinary manager enable path \
-                   and its proof-backed retry after a user approval",
+            what: "TWO callers, both deliberate. (1) `check_enable_allowed_impl`, shared by \
+                   the ordinary manager enable path and its proof-backed retry after a user \
+                   approval. (2) `remove_extension`'s preflight, which reuses this guard so \
+                   an uninstall is bound by the SAME tier and affiliation arms as an enable \
+                   — a public caller must not be able to uninstall a private extension it \
+                   may not even see. It passes `persisted: false, user_granted: false` on \
+                   purpose: those two arms exist to refuse re-enabling what an operator \
+                   pinned OFF, which is an argument about turning something on and does not \
+                   apply in the removal direction.",
         }],
     },
     Guard {
