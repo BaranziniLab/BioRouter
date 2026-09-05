@@ -24,9 +24,23 @@
 //!   inert there;
 //! * it still reaches every session-addressing route NOT on
 //!   [the gated list](self#the-gated-list). `POST /interrupt` and `POST
-//!   /agent/cancel` now require user-action proof; `POST /agent/resume`,
-//!   `GET /sessions/{id}/extensions`, `PUT /sessions/{id}/name` and
-//!   `DELETE /sessions/{id}` remain open. The list began as the five
+//!   /agent/cancel` now require user-action proof; `GET
+//!   /sessions/{id}/extensions`, `GET /sessions/{id}/usage`, `PUT
+//!   /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values` and
+//!   `DELETE /sessions/{id}` remain open, as do `GET /active_work` and `POST
+//!   /active_work/{id}/cancel` — which name no session id in their path and so
+//!   enumerate, in the manner of `GET /sessions` below, but carry a `title` and
+//!   `detail` holding the SHELL COMMAND or TASK PROMPT of every running job.
+//!   That is content rather than metadata, and it is the one row here that a
+//!   reader should not file mentally beside "titles and directories".
+//!   ⚠ **This bullet listed `POST /agent/resume` as open until 2026-09-04, and
+//!   it was wrong** — measured against a live private session, `/agent/resume`
+//!   answers 403 without the capability header and 200 with it, because
+//!   `resume_agent` has called [`session_reach`] directly since before this
+//!   sentence was last touched. A residual that names a route which is in fact
+//!   guarded is worse than one that omits it: it invites someone to "close" a
+//!   gate that is already there, and it makes the rest of the enumeration read
+//!   as measured when it is remembered. The list began as the five
 //!   the ruling named, and `/reply` dominates them, but "dominates" is an
 //!   argument about capability rather than a proof about every route — which is
 //!   how `/export` and `/events` sat outside it while returning the same bytes
@@ -131,6 +145,19 @@
 //! | `POST /agent/update_working_dir` | Repoints the session at a directory of the caller's choosing and restarts its agent. |
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `GET|POST /knowledge/active` | Reads or repoints the session's knowledge bases and write target. |
+//! | `POST /agent/resume` | Loads the session's stored conversation into a live agent. Gates directly, like the rows above. |
+//! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
+//! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
+//! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |
+//!
+//! ⚠ **Two spellings, one list.** The last row reaches the gate through a helper
+//! rather than by naming it, which is why a scan for the literal `session_reach(`
+//! reports those four as ungated and why the ordering test below uses two of them
+//! as over-read controls. They are NOT exempt — measured live, each answers 403
+//! without the capability header and proceeds with it. A future sweep that greps
+//! for the call must follow `authorize_agent_control` too, or it will "discover"
+//! four holes that are not there and, worse, trust the same grep when it reports
+//! a real one.
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
@@ -171,6 +198,15 @@ use biorouter_server::auth::{user_action_proof, UserActionProof};
 /// the gate can express the rule the ruling actually states, *caller capability
 /// ≥ target classification*, instead of the proxy it used to enforce.
 ///
+/// ⚠ **It has a prose home now, and it did not before.** The header shipped
+/// documented only here, in the source of the gate that reads it — which is
+/// exactly the wrong place for its only reader, a person or a program writing
+/// automation against the daemon. `docs/deployment/programmatic-session-access.md`
+/// is the user-facing page: the fail-safe table, `curl` for the JSON read and the
+/// SSE stream, and a per-route audit of what this gate does and does not cover.
+/// Keep the two in step — the doc states the resolution rules this function
+/// implements, so a change here is a change there.
+///
 /// [#47]: https://github.com/BaranziniLab/biorouter/issues/47
 pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
 
@@ -187,12 +223,42 @@ pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
 /// It forecloses the retry for the reason every refusal in this feature does: a
 /// model that reads a refusal as transient loops on it.
 ///
-/// ⚠ **It now names BOTH ways through**, because there are two and a refusal
-/// that named one would send half its readers somewhere that cannot help them.
-/// The old wording said only "this request carried no proof it came from the
+/// ⚠ **It names BOTH ways through**, because there are two and a refusal that
+/// named one would send half its readers somewhere that cannot help them. The
+/// oldest wording said only "this request carried no proof it came from the
 /// person at the keyboard", which was the whole defect: a terminal running
 /// Versa was told to go and be a human, when what it needed was to be told it
 /// already had the capability and merely was not saying so.
+///
+/// ⚠ **…and it names the MECHANISM, not only the concept — that fix went
+/// halfway once already.** Naming "a session running a private model" repaired
+/// the register but left the one operative fact out: the reader who receives
+/// this 403 is overwhelmingly a program (a script, a monitor, a scheduled job),
+/// and the only thing such a reader can act on is the header name and a value
+/// to put in it. The measured cost of leaving it implicit is not hypothetical —
+/// a capable agent read this refusal end to end, concluded the daemon had no
+/// programmatic channel into a private session at all, and filed the absence of
+/// a capability that has always shipped. Naming the concept tells a reader what
+/// state to be in; naming [`CALLER_PROVIDER_HEADER`] tells it what to *send*.
+///
+/// ⚠ **The added sentence is about the CALLER'S OWN credentials and nothing
+/// else**, which is the line [`SESSION_REACH_NO_KEY`] already walks and the
+/// only line on which this constant may grow. It is fixed text: it does not
+/// vary with the target, is not derived from it, and is emitted identically for
+/// `Private` and for [`TargetTier::Unreadable`], so the byte-for-byte
+/// indistinguishability that keeps this refusal from being a per-id oracle is
+/// untouched. Anything that named the chat — even to say the header would have
+/// worked for it — would rebuild the oracle in the act of being helpful.
+///
+/// ⚠ **It is NOT a bypass, and must not be reworded into one.** The header
+/// carries a provider *name* that this daemon resolves against its own registry
+/// ([`caller_capability`]); an unknown name resolves [`ProviderTier::Public`]
+/// and changes nothing. A caller that holds the daemon secret could already
+/// spell an installed provider's name here — the module header records that
+/// residual, which is [#47] — so this sentence discloses no reach that the
+/// header's own doc comment does not, and grants none at all.
+///
+/// [#47]: https://github.com/BaranziniLab/biorouter/issues/47
 pub const SESSION_OUT_OF_REACH: &str =
     "That chat is private, or there is no chat with that id. This request was made on a public \
      model and carried no proof it came from the person at the keyboard, and the two answers are \
@@ -200,8 +266,14 @@ pub const SESSION_OUT_OF_REACH: &str =
      nothing was changed. Do not retry as you are; the same call will be refused again, and no \
      setting, hook or permission mode changes it. A private chat is reachable from a session \
      running a private model, one the institution hosts or one that runs on this machine, or \
-     from the desktop app when the person at the keyboard acts. If this task genuinely needs \
-     that chat, stop and ask the user to open it for you.";
+     from the desktop app when the person at the keyboard acts. If you are a program that is \
+     already running under such a model — a script, a monitor, a scheduled job — then you are \
+     not lacking the capability, only failing to state it: declare the provider you are running \
+     by sending the header `X-Caller-Provider: <provider name>` on this request, for example \
+     `X-Caller-Provider: versa_azure`. That header carries a provider NAME and this daemon \
+     resolves it against its own registry, so a name this install does not publish resolves as \
+     public and changes nothing. If this task genuinely needs that chat and you have no such \
+     model to declare, stop and ask the user to open it for you.";
 
 /// …and when this daemon was handed no user-action key at all.
 ///
@@ -769,6 +841,107 @@ mod tests {
         assert!(SESSION_OUT_OF_REACH.contains("Do not retry"));
     }
 
+    /// **The mechanism, not only the concept.** The reader who receives this
+    /// 403 is overwhelmingly a program, and the one fact it can act on is the
+    /// header name plus a value to put in it.
+    ///
+    /// ⚠ This exists because naming the concept alone has already failed once
+    /// in production, in a way no test could see: an agent read the refusal in
+    /// full, took "reachable from a session running a private model" to describe
+    /// a state it had no way to enter, and reported the absence of a channel
+    /// that has always shipped. `contains("private model")` would have passed
+    /// throughout. So the assertion is on the *actionable* half — the literal
+    /// header, an example value that resolves Private on a real install, and the
+    /// register that stops a model reading it as a sanctioned bypass.
+    #[test]
+    fn the_refusal_tells_a_program_which_header_to_send() {
+        assert!(
+            SESSION_OUT_OF_REACH.contains(CALLER_PROVIDER_HEADER),
+            "the refusal names the capability but not the header that declares it, which is the \
+             one thing a script, a monitor or a CI job can act on"
+        );
+        // An example, not just the header name: a caller that must guess the
+        // VALUE has been handed half a mechanism. `versa_azure` is the name the
+        // registry test next door pins as Private, so this example is one that
+        // actually works rather than a plausible-looking placeholder.
+        assert!(
+            SESSION_OUT_OF_REACH.contains("versa_azure"),
+            "the refusal names `{CALLER_PROVIDER_HEADER}` without an example value"
+        );
+        // …and it says the daemon resolves the NAME, so a reader cannot take
+        // the sentence as an invitation to assert a tier it does not have.
+        assert!(
+            SESSION_OUT_OF_REACH.contains("provider NAME"),
+            "the refusal offers the header without saying the daemon resolves it, which reads \
+             as a tier the caller may assert"
+        );
+    }
+
+    /// **Point 2: the hint belongs to exactly one of the two arms.**
+    ///
+    /// [`SESSION_REACH_NO_KEY`] is a different state — this daemon was handed no
+    /// user-action key at all (`just run-server`, a hand-run `biorouterd
+    /// agent`) — and the header does not help there for the caller that arm is
+    /// written for. Putting it in both would re-create the original defect in
+    /// mirror image: the keyless arm would start answering a question its reader
+    /// did not ask, exactly as the reach arm used to answer "be a human" to a
+    /// caller that merely was not declaring itself.
+    ///
+    /// ⚠ Not a claim that a capable caller is refused on a keyless daemon — it
+    /// is not: [`refuse_unless_reachable`] admits on capability *before* it ever
+    /// looks at the proof, so such a caller never reaches this string. That is
+    /// precisely why the string has no reason to mention the header.
+    #[test]
+    fn the_keyless_arm_does_not_borrow_the_capability_hint() {
+        assert!(
+            !SESSION_REACH_NO_KEY.contains(CALLER_PROVIDER_HEADER),
+            "the keyless refusal is answering a question its reader did not ask"
+        );
+        // The two arms stay distinguishable, which is open question 23's whole
+        // point and which a copy-paste of the hint would erode.
+        assert_ne!(SESSION_OUT_OF_REACH, SESSION_REACH_NO_KEY);
+    }
+
+    /// **The oracle property, restated against the sentence that was added.**
+    ///
+    /// [`no_such_session_and_a_private_session_are_the_same_refusal`] already
+    /// asserts the two answers are equal at every (capability, proof) pair. This
+    /// asserts the other half of why that holds and will keep holding: the hint
+    /// is CONSTANT text about the caller's own credentials, so there is no input
+    /// from which a future edit could make it vary with the target. A sentence
+    /// like "the header would have worked for this chat" would satisfy the
+    /// equality test only until someone made it conditional.
+    #[test]
+    fn the_capability_hint_is_constant_and_never_derived_from_the_target() {
+        for capability in CAPABILITIES {
+            for proof in PROOFS {
+                let private = refuse_unless_reachable(true, TargetTier::Private, capability, proof);
+                let absent =
+                    refuse_unless_reachable(true, TargetTier::Unreadable, capability, proof);
+                assert_eq!(private, absent);
+                if let Err(refusal) = private {
+                    // Whatever it says, it is one of the two constants — the
+                    // `&'static str` in `SessionOutOfReach` is what makes that
+                    // checkable, and it is why the type does not carry a String.
+                    assert!(
+                        refusal.message == SESSION_OUT_OF_REACH
+                            || refusal.message == SESSION_REACH_NO_KEY,
+                        "a refusal composed per-request can vary with the target"
+                    );
+                }
+            }
+        }
+        // The hint names no part of a session. These are the four fields
+        // `SessionSummary` carries; the refusal may not have acquired a way to
+        // spell any of them.
+        for leak in ["session_id", "working_dir", "privacy_tier", "\"name\""] {
+            assert!(
+                !SESSION_OUT_OF_REACH.contains(leak),
+                "the refusal now names `{leak}`, which is a fact about the chat"
+            );
+        }
+    }
+
     /// Issue #56 Task 58, Step 3: **resolve the tier before doing anything
     /// else.** The half [`refuse_unless_reachable`]'s own tests cannot see.
     ///
@@ -871,10 +1044,22 @@ mod tests {
             );
         }
 
-        // The negative controls, so the scan is provably not vacuous: a handler
-        // in each file that is NOT on the gated list must come back without the
-        // gate, or `body_of` is over-reading past a function end and every
+        // The OVER-READ controls, so the scan is provably not vacuous: a handler
+        // in each file whose body does not name the gate must come back without
+        // it, or `body_of` is over-reading past a function end and every
         // assertion above is passing on someone else's body.
+        //
+        // ⚠ **"Does not name the gate" is not "is not gated", and two of these
+        // rows are the difference.** `update_agent_provider` and
+        // `agent_remove_extension` ARE gated — through
+        // `agent::authorize_agent_control`, which calls `session_reach` and then
+        // reads the row — and measured live against a private session each
+        // answers 403 without the capability header and proceeds with it. They
+        // are controls for the EXTRACTOR, not exemptions from the gate, and the
+        // comment here said otherwise until 2026-09-04. `interrupt` and
+        // `get_session_extensions` are the genuinely ungated pair: `interrupt`
+        // requires the user's proof instead, and `get_session_extensions` is on
+        // the module header's open residual.
         //
         // BOTH sides in `agent.rs`: `agent_remove_extension` sits after the two
         // gated handlers' neighbourhood and `update_agent_provider` before it,
