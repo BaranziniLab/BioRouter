@@ -925,20 +925,24 @@ mod one_core_guards {
     /// misses everything after them. Splitting on the LAST occurrence keeps the
     /// whole production body in view in both layouts.
     fn production(text: &str) -> String {
-        let body = match text.rfind("#[cfg(test)]") {
-            Some(idx) => &text[..idx],
-            None => text,
-        };
+        // ⚠ `rsplit_once`, not `split_once`: the LAST `#[cfg(test)]`, so a file
+        // whose tests sit mid-way (this one does) keeps its whole production
+        // body in view. Splitting on the first truncates everything after an
+        // early test module and invents a clean bill of health for it.
+        //
+        // `rsplit_once` rather than `rfind` + slice because the slice form trips
+        // `clippy::string_slice`, which this repo denies; the index is a char
+        // boundary either way, both needles being ASCII.
+        let body = text
+            .rsplit_once("#[cfg(test)]")
+            .map_or(text, |(before, _)| before);
         // Comments are dropped, and that is not cosmetic: every one of these
         // guards forbids a pattern, so the prose explaining WHY it is forbidden
         // names it — and a guard that reads its own rationale as a violation
         // reports the fix as the bug. Both of these fired on their own doc
         // comments before this line existed.
         body.lines()
-            .map(|line| match line.find("//") {
-                Some(idx) => &line[..idx],
-                None => line,
-            })
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
             .collect::<Vec<_>>()
             .join("\n")
     }
