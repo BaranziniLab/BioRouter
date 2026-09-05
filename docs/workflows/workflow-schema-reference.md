@@ -56,9 +56,11 @@ Workflows follow this schema structure:
 | [`activities`](#activities) | Array | No | List of example prompts that can include parameter substitutions. Activities appear as clickable bubbles in Biorouter Desktop. |
 | [`extensions`](#extensions) | Array | No | List of extension configurations |
 | [`parameters`](#parameters) | Array | No | List of parameter definitions for dynamic workflows |
+| [`knowledge_bases`](#knowledge-bases) | Object | No | The knowledge bases this workflow works with, and which one it writes to |
 | [`response`](#response) | Object | No | Structured output schema for automation workflows |
 | [`retry`](#retry) | Object | No | Configuration for automated retry logic with success validation |
 | [`settings`](#settings) | Object | No | Configuration for model provider, model name, and other settings |
+| [`skills`](#skills) | Array | No | Names of skills whose instructions this workflow requires |
 | [`sub_workflows`](#subworkflows) | Array | No | List of subworkflows |
 | `version` | String | No | The workflow format version, defaults to "1.0.0" if omitted |
 
@@ -446,8 +448,16 @@ Each success check in the `checks` array has the following schema:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | String | Yes | Type of check - currently only "shell" is supported |
-| `command` | String | Yes | Shell command to execute for validation (must exit with code 0 for success) |
+| `type` | String | Yes | `shell`, `file_exists`, `output_contains` or `json_schema` |
+
+The fields each type takes:
+
+| `type` | Fields | Passes when |
+|--------|--------|-------------|
+| `shell` | `command` | The command exits 0 |
+| `file_exists` | `path` | A file or directory exists at `path`. A relative path resolves against the session working directory for the interactive gate, and the process working directory for a workflow retry |
+| `output_contains` | `command`, `substring` | The command's combined stdout+stderr contains `substring`. The exit status is **ignored** — this checks the output's content (`0 failed`, `PASS`, a coverage figure) |
+| `json_schema` | `path`, `schema` | The JSON file at `path` parses and validates against the inline JSON Schema in `schema` |
 
 #### How retry logic works
 
@@ -536,6 +546,41 @@ settings:
 ```
 
 > **Note.** Settings specified in a workflow will override your default Biorouter configuration when that workflow is executed. If no settings are specified, Biorouter will use your configured defaults.
+
+### Skills
+
+The `skills` field names the [skills](../extensions/skill-catalog.md) whose instructions this workflow requires. Their bodies are inlined into the system prompt before the first model call, so a workflow can depend on a documented procedure without restating it.
+
+This is stricter than the model's own skill search on purpose: a workflow *requires* a procedure, so naming one that is not installed, or one the conversation has switched off, stops the run with an error rather than degrading to a hint the model may ignore.
+
+An entry may name either a single skill or a whole **bundle** — the group an installed skill package registers. A bundle expands to every skill in it, and naming a bundle together with one of its members inlines that member once.
+
+```yaml
+skills:
+  - spoke-knowledge-graph   # one skill
+  - office-pack             # every skill in the bundle
+```
+
+### Knowledge bases
+
+The `knowledge_bases` field states which [knowledge bases](../knowledge-base/README.md) a session started from this workflow can see, and which one it writes to.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `visible` | Array | No | The base ids the session may search. `default` is added to this set automatically |
+| `default` | String | No | The primary base: the write target, and the single-base read target |
+
+Omitting the whole `knowledge_bases` key and giving an empty one mean different things. Absent means "this workflow has nothing to say about knowledge bases", so the session keeps whatever selection it would otherwise have. An empty `visible` with no `default` is a statement — "this workflow sees no knowledge bases" — and is applied.
+
+```yaml
+knowledge_bases:
+  default: research-kb
+  visible:
+    - research-kb
+    - protocols
+```
+
+> **Note.** A workflow that declares this key needs the Knowledge capability to honour it, so Biorouter loads it for the session even when the workflow's `extensions` list omits it.
 
 ### Subworkflows
 
