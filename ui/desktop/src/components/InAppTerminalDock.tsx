@@ -6,6 +6,8 @@ import { Plus, Terminal as TerminalIcon, X } from './icons/app-icons';
 import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
 import { registerCloseTerminalPane, registerNewTerminalPane } from '../utils/terminalFocus';
+import { onTerminalRunRequest } from '../utils/terminalRunChannel';
+import { terminalInputForCommand } from '../utils/shellCommandBlock';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
 
@@ -21,6 +23,15 @@ interface InAppTerminalDockProps {
    * behaviour — there hiding and emptying are the same "set open false".
    */
   onEmptied?: () => void;
+  /**
+   * This terminal's scope — the chat tab id `TerminalDockContext` is keyed by.
+   *
+   * Supplied ONLY so the dock can receive "run this code block" requests for its
+   * own chat; everything else about a dock is already scoped by where it is
+   * mounted. Omitted by the onboarding card's dock, which belongs to no chat and
+   * must never be the landing zone for a transcript's Run button.
+   */
+  dockKey?: string;
 }
 
 type TerminalPane = {
@@ -103,7 +114,8 @@ const TerminalPaneView: React.FC<{
   open: boolean;
   paneId: string;
   workingDir?: string;
-}> = ({ active, open, paneId, workingDir }) => {
+  dockKey?: string;
+}> = ({ active, open, paneId, workingDir, dockKey }) => {
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -142,6 +154,34 @@ const TerminalPaneView: React.FC<{
     }
     window.electron.writeTerminalSession(sessionId, data).catch(() => {});
   }, []);
+
+  // "Run" on a chat code block lands here (utils/terminalRunChannel.ts).
+  //
+  // Claimed by the ACTIVE pane only — the one the user can see is the one a
+  // command belongs in — and only when this dock has a key, which the
+  // onboarding card's chat-less dock does not.
+  //
+  // It goes through this pane's OWN writeToBackend rather than around it, which
+  // is the whole reason the channel carries a command instead of a session id:
+  // `pendingInputRef` in there already holds input written before the pty has
+  // spawned, so the "dock just opened, shell is still starting" case needs no
+  // second buffer.
+  useEffect(() => {
+    if (!active) return;
+    return onTerminalRunRequest(dockKey, (command) => {
+      const term = terminalRef.current;
+      // xterm's live report of what the SHELL asked for (DECSET 2004), read at
+      // delivery rather than assumed. The `?.` is load-bearing: `modes` is
+      // non-optional in the typings but absent from the test double, and a
+      // wrong guess here is either six bytes of literal `[200~` in front of the
+      // user's command or a multi-line block executed a line at a time.
+      const bracketedPaste = term?.modes?.bracketedPasteMode ?? false;
+      writeToBackend(terminalInputForCommand(command, bracketedPaste));
+      // So the user can Ctrl-C it, or answer whatever it asks. A hidden dock's
+      // focus() is a browser no-op; `fitAndFocus` focuses again when it shows.
+      term?.focus();
+    });
+  }, [active, dockKey, writeToBackend]);
 
   const fitAndFocus = useCallback(() => {
     if (focusFrameRef.current !== null) {
@@ -330,6 +370,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   workingDir,
   onClose,
   onEmptied,
+  dockKey,
 }) => {
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
@@ -564,6 +605,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             open={open}
             paneId={pane.id}
             workingDir={workingDir}
+            dockKey={dockKey}
           />
         ))}
       </div>

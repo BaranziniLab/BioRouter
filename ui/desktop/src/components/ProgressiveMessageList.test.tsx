@@ -47,6 +47,7 @@ const liveProps = {
   toolCallNotifications: new Map(),
   append: vi.fn(),
   isUserMessage: (m: Message) => m.role !== 'assistant',
+  onRunInTerminal: null,
 };
 
 describe('ProgressiveMessageList trailing activity indicator', () => {
@@ -57,6 +58,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
     render(
       <ProgressiveMessageList
         messages={messages}
+        onRunInTerminal={null}
         chat={{ sessionId: 'session-preview' }}
         toolCallNotifications={new Map()}
         append={() => {}}

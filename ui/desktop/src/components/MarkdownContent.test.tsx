@@ -202,6 +202,135 @@ console.log('Hello, World!');
     });
   });
 
+  // "Run" hands a shell code block to this chat's in-app terminal. The whole
+  // affordance is OPT-IN: eleven surfaces mount MarkdownContent and only one is
+  // a live chat, so the default must be a transcript with no shell in it.
+  describe('Run in the terminal', () => {
+    const fence = (language: string, body: string) => ['```' + language, body, '```'].join('\n');
+
+    async function findRunButton() {
+      return screen.findByRole('button', { name: /^run$/i });
+    }
+
+    it('offers Run on a shell block when the surface can run one', async () => {
+      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+
+      expect(await findRunButton()).toBeInTheDocument();
+    });
+
+    it('hands the command over on click', async () => {
+      const onRunInTerminal = vi.fn();
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
+      );
+
+      fireEvent.click(await findRunButton());
+
+      expect(onRunInTerminal).toHaveBeenCalledExactlyOnceWith('ls -la');
+    });
+
+    it('keeps Copy beside it — the old path is not replaced', async () => {
+      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+
+      await findRunButton();
+      expect(screen.getByRole('button', { name: /^copy$/i })).toBeInTheDocument();
+    });
+
+    it('confirms the hand-off, since the terminal may be below the fold', async () => {
+      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+
+      fireEvent.click(await findRunButton());
+
+      expect(await screen.findByRole('button', { name: /^sent$/i })).toBeInTheDocument();
+    });
+
+    it('is ABSENT by default — the eleven other mount sites have no terminal', async () => {
+      render(<MarkdownContent content={fence('bash', 'ls -la')} />);
+
+      expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
+    });
+
+    it('is absent on a non-shell block', async () => {
+      render(<MarkdownContent content={fence('rust', 'fn main() {}')} onRunInTerminal={vi.fn()} />);
+
+      expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
+    });
+
+    it('is absent on a shell TRANSCRIPT, whose body is a prompt plus output', async () => {
+      // The trap the full-identifier read exists to close: `/language-(\w+)/`
+      // stops at the hyphen, so this block's display language is `shell` — which
+      // IS runnable. Running it would execute the prompt character and then two
+      // lines of `ls` output.
+      render(
+        <MarkdownContent
+          content={fence('shell-session', '$ ls\nREADME.md\nsrc')}
+          onRunInTerminal={vi.fn()}
+        />
+      );
+
+      expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
+    });
+
+    it('is present on a plain ```shell block, which is a command', async () => {
+      render(<MarkdownContent content={fence('shell', 'ls -la')} onRunInTerminal={vi.fn()} />);
+
+      expect(await findRunButton()).toBeInTheDocument();
+    });
+
+    it('is absent on an empty shell block', async () => {
+      render(<MarkdownContent content={fence('bash', '   ')} onRunInTerminal={vi.fn()} />);
+
+      expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
+    });
+
+    it('hands over a multi-line block whole, interior indentation intact', async () => {
+      const onRunInTerminal = vi.fn();
+      const script = 'for f in *.txt; do\n  echo "$f"\ndone';
+      render(<MarkdownContent content={fence('bash', script)} onRunInTerminal={onRunInTerminal} />);
+
+      fireEvent.click(await findRunButton());
+
+      expect(onRunInTerminal).toHaveBeenCalledExactlyOnceWith(script);
+    });
+
+    it('keeps its confirmation across a parent re-render with a STABLE callback', async () => {
+      // Measured in a real browser: an unstable `onRunInTerminal` gives
+      // ReactMarkdown a new `components.code` identity every render, and React
+      // treats a new component type as a different component — so the whole
+      // code-block subtree unmounts and remounts, taking this state (and
+      // Copy's "Copied", which has always worked the same way) with it.
+      //
+      // BaseChat's handler is useCallback-stable for exactly this reason. The
+      // assertion is here rather than there because this is where an unstable
+      // callback would show itself: a transcript whose blocks are torn down and
+      // rebuilt on every streaming frame.
+      const onRunInTerminal = vi.fn();
+      const { rerender } = render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
+      );
+
+      fireEvent.click(await findRunButton());
+      await screen.findByRole('button', { name: /^sent$/i });
+
+      rerender(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
+      );
+
+      expect(screen.getByRole('button', { name: /^sent$/i })).toBeInTheDocument();
+    });
+
+    it('still shows the language label and the code itself', async () => {
+      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+
+      await findRunButton();
+      expect(screen.getByText('bash')).toBeInTheDocument();
+    });
+  });
+
   describe('Markdown Features', () => {
     it('renders headers correctly', async () => {
       const content = `# H1 Header

@@ -54,6 +54,17 @@ interface BioRouterMessageProps {
   ) => Promise<void>;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
+  /**
+   * Hand a shell code block to this chat's in-app terminal, or `null` on a
+   * surface that has none.
+   *
+   * REQUIRED and nullable rather than optional, the same discipline
+   * `onOpenArtifact` carries next to it: a read-only transcript legitimately
+   * has no terminal, and it should have to SAY so. An optional prop would let a
+   * live chat lose the wiring in a refactor and look exactly like one of the
+   * surfaces that never had it.
+   */
+  onRunInTerminal: ((command: string) => void) | null;
 }
 
 export default function BioRouterMessage({
@@ -68,6 +79,7 @@ export default function BioRouterMessage({
   toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
   onOpenArtifact,
+  onRunInTerminal,
   workingDir,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -198,6 +210,10 @@ export default function BioRouterMessage({
                 onOpenArtifact={isStreaming ? undefined : onOpenArtifact}
                 workingDir={workingDir}
                 knownFilePaths={knownFilePaths}
+                // Withheld while the message is still streaming, exactly as
+                // onOpenArtifact is: a code fence that has not closed yet holds
+                // half a command, and half a command is a different command.
+                onRunInTerminal={isStreaming ? undefined : (onRunInTerminal ?? undefined)}
               />
             </div>
 

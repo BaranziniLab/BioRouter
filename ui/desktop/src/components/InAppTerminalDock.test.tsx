@@ -7,10 +7,27 @@ import {
   resetCloseTerminalPaneRegistry,
   resetNewTerminalPaneRegistry,
 } from '../utils/terminalFocus';
+import { resetTerminalRunChannelForTests, runInTerminal } from '../utils/terminalRunChannel';
 import { GENERATED_THEMES } from '../styles/themes.generated';
+
+interface FakeTerminal {
+  modes: { bracketedPasteMode: boolean };
+  focus: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Every xterm instance the dock has constructed, newest last — one per pane.
+ *
+ * `modes` is xterm's live report of what the SHELL asked for (DECSET 2004), and
+ * the Run path reads it to decide whether to bracket the paste. A double
+ * without it would let the un-bracketed branch pass for every case, including
+ * the multi-line one that exists to exercise the other branch.
+ */
+const xtermInstances = vi.hoisted(() => [] as FakeTerminal[]);
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    modes = { bracketedPasteMode: false };
     dispose = vi.fn();
     focus = vi.fn();
     loadAddon = vi.fn();
@@ -18,6 +35,9 @@ vi.mock('@xterm/xterm', () => ({
     open = vi.fn();
     write = vi.fn();
     writeln = vi.fn();
+    constructor() {
+      xtermInstances.push(this as unknown as FakeTerminal);
+    }
   },
 }));
 
@@ -34,13 +54,18 @@ beforeEach(() => {
   terminalDisposer.mockClear();
   resetCloseTerminalPaneRegistry();
   resetNewTerminalPaneRegistry();
+  resetTerminalRunChannelForTests();
+  xtermInstances.length = 0;
+  let nextSessionId = 0;
   Object.defineProperty(window, 'electron', {
     configurable: true,
     value: {
+      // Deterministic and ordered, so a test can say WHICH pane's shell a
+      // command reached rather than only that some write happened.
       createTerminalSession: vi.fn(async () => ({
         backend: 'pty',
         cwd: '/Users/wgu/Desktop/biorouter',
-        sessionId: window.crypto.randomUUID(),
+        sessionId: `pty-${(nextSessionId += 1)}`,
         success: true,
       })),
       disposeTerminalSession: vi.fn(async () => ({ success: true })),
@@ -166,6 +191,144 @@ describe('InAppTerminalDock', () => {
     expect(screen.getByRole('tablist', { name: /^terminals$/i })).toHaveClass('overflow-x-auto');
   });
 
+  // "Run" on a shell code block in the transcript (utils/terminalRunChannel.ts).
+  // The click happens far away in the chat, so the registry IS the entry point
+  // here exactly as it is for Cmd+W above: runInTerminal() is what BaseChat
+  // calls, and the only thing between it and a real pty is this pane.
+  describe('running a code block from the chat', () => {
+    const ESC = String.fromCharCode(0x1b);
+
+    async function renderDock(props: Partial<{ dockKey: string; open: boolean }> = {}) {
+      const view = render(
+        <InAppTerminalDock
+          dockKey="tab-1"
+          open
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+          {...props}
+        />
+      );
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+      // The pty id is assigned after the async spawn resolves; until it is,
+      // writes go to pendingInputRef instead of the backend.
+      await waitFor(() => expect(xtermInstances.length).toBeGreaterThan(0));
+      return view;
+    }
+
+    it("writes the command into this dock's shell and SUBMITS it", async () => {
+      await renderDock();
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-1', 'ls -la\r')
+      );
+    });
+
+    it('brackets the paste when the SHELL has asked for it', async () => {
+      await renderDock();
+      xtermInstances[0].modes.bracketedPasteMode = true;
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(
+          'pty-1',
+          `${ESC}[200~ls -la${ESC}[201~\r`
+        )
+      );
+    });
+
+    it('sends a multi-line block as ONE buffer with a single Enter', async () => {
+      // Line-by-line, each newline of a heredoc is its own Enter. Bracketed,
+      // the whole thing lands in the line editor and the trailing CR runs it.
+      await renderDock();
+      xtermInstances[0].modes.bracketedPasteMode = true;
+
+      act(() => runInTerminal('tab-1', 'cat <<EOF\nhello\nEOF'));
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(
+          'pty-1',
+          `${ESC}[200~cat <<EOF\rhello\rEOF${ESC}[201~\r`
+        )
+      );
+    });
+
+    it('focuses the terminal, so the user can Ctrl-C what they started', async () => {
+      await renderDock();
+
+      act(() => runInTerminal('tab-1', 'sleep 60'));
+
+      await waitFor(() => expect(xtermInstances[0].focus).toHaveBeenCalled());
+    });
+
+    it('delivers a command clicked BEFORE any terminal existed', async () => {
+      // The ordinary case: no dock is open, so the click both opens one and
+      // asks it to run something — three commits before a pane exists.
+      const { rerender } = render(
+        <InAppTerminalDock
+          dockKey="tab-1"
+          open={false}
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+        />
+      );
+      expect(document.querySelector('[data-terminal-pane]')).toBeNull();
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+
+      rerender(
+        <InAppTerminalDock
+          dockKey="tab-1"
+          open
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+        />
+      );
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-1', 'ls -la\r')
+      );
+    });
+
+    it('lands in the ACTIVE pane, not the first one', async () => {
+      const user = userEvent.setup();
+      await renderDock();
+
+      await user.click(screen.getByRole('button', { name: /new terminal/i }));
+      await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(2));
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-2', 'ls -la\r')
+      );
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalledWith('pty-1', 'ls -la\r');
+    });
+
+    it('ignores a request for ANOTHER chat tab', async () => {
+      await renderDock();
+
+      act(() => runInTerminal('tab-2', 'rm -rf build'));
+
+      await waitFor(() => expect(xtermInstances.length).toBe(1));
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+    });
+
+    it("a dock with no key — the onboarding card's — never receives one", async () => {
+      // That dock belongs to no chat, and a transcript\'s Run button must never
+      // find it.
+      await renderDock({ dockKey: undefined });
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+    });
+  });
+
   // Issue #21 — the Cmd+W ladder's first rung. The keystroke never reaches the
   // DOM (the Electron menu owns Cmd+W and delivers IPC), so the registry IS the
   // keyboard's entry point: requestCloseTerminalPane() here is exactly what
@@ -248,6 +411,67 @@ describe('InAppTerminalDock', () => {
       expect(claimed).toBe(false);
       // The hidden dock's panes survive — hiding is not closing.
       expect(screen.getAllByRole('tab', { hidden: true })).toHaveLength(1);
+    });
+  });
+
+  // Folding the dock away and bringing it back must not cost the user their
+  // scrollback — the thing that makes the in-app terminal usable at all, and the
+  // first thing anyone checks after clicking Run and then hiding the dock.
+  //
+  // Scrollback (8000 lines) lives in the live XTerm instance, and the pty lives
+  // in the main process keyed by session id. So the property to pin is that
+  // NEITHER is replaced: hide is a `hidden` class on a still-mounted tree, and
+  // the teardown effect keys on paneId/workingDir, not on `open`.
+  describe('folding the dock away', () => {
+    it('keeps the same terminal and the same shell across hide and show', async () => {
+      const props = { workingDir: '/Users/wgu/Desktop/biorouter', onClose: vi.fn() };
+      const { rerender } = render(<InAppTerminalDock open {...props} />);
+      await waitFor(() => expect(xtermInstances.length).toBe(1));
+      const [terminal] = xtermInstances;
+      const pane = document.querySelector('[data-terminal-pane]');
+
+      rerender(<InAppTerminalDock open={false} {...props} />);
+
+      // Still mounted, merely hidden — the section carries `hidden`, the pane
+      // itself is untouched. A dock that unmounted here would take the pty with
+      // it through the teardown effect.
+      expect(screen.getByTestId('in-app-terminal-dock')).toHaveClass('hidden');
+      expect(document.querySelector('[data-terminal-pane]')).toBe(pane);
+      expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
+
+      rerender(<InAppTerminalDock open {...props} />);
+
+      expect(screen.getByTestId('in-app-terminal-dock')).not.toHaveClass('hidden');
+      // The SAME instance, so its 8000-line buffer is the same buffer. A
+      // recreated pane would look identical in the DOM and be empty.
+      expect(xtermInstances).toHaveLength(1);
+      expect(xtermInstances[0]).toBe(terminal);
+      expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);
+      expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
+    });
+
+    it('a command run before folding is still running in the same shell after', async () => {
+      const props = {
+        dockKey: 'tab-1',
+        workingDir: '/Users/wgu/Desktop/biorouter',
+        onClose: vi.fn(),
+      };
+      const { rerender } = render(<InAppTerminalDock open {...props} />);
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+      await waitFor(() => expect(xtermInstances.length).toBe(1));
+
+      act(() => runInTerminal('tab-1', 'ls -la'));
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-1', 'ls -la\r')
+      );
+
+      rerender(<InAppTerminalDock open={false} {...props} />);
+      rerender(<InAppTerminalDock open {...props} />);
+
+      // Same pty, never disposed and never respawned: the command's output is
+      // still in the buffer the user comes back to.
+      expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
+      expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);
     });
   });
 

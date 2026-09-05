@@ -149,6 +149,12 @@ const SessionMessages: React.FC<{
                   // did nothing when clicked. Absent means absent.
                   isUserMessage={isUserMessage} // Use the same function as BaseChat
                   onOpenArtifact={onOpenArtifact}
+                  // No terminal on this surface, and no chat to open one in: a
+                  // saved transcript is a record, and a shell code block in it
+                  // is history, not an offer. Explicitly null rather than
+                  // omitted, so the absence is a decision and not an oversight
+                  // — the same reason `append` is absent above.
+                  onRunInTerminal={null}
                   workingDir={workingDir}
                   batchSize={15} // Same as BaseChat default
                   batchDelay={30} // Same as BaseChat default
