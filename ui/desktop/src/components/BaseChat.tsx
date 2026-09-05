@@ -64,6 +64,7 @@ import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
+import { runInTerminal } from '../utils/terminalRunChannel';
 import { SessionNamePill } from './SessionNamePill';
 import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
@@ -1234,6 +1235,28 @@ function BaseChatContent({
       else setLocalTerminalDockOpen(next);
     },
     [terminalDock, terminalDockKey]
+  );
+  /**
+   * "Run" on a shell code block in this chat's transcript.
+   *
+   * Open first, then deliver. Opening a terminal that has none creates a pane,
+   * so at click time there is nothing to write to — `terminalRunChannel` holds
+   * the command for the few commits that takes. Ordering is therefore not
+   * load-bearing for correctness, only for honesty: the dock is what the user
+   * asked for, the command is what they asked it to do.
+   *
+   * Reaching the pane through the channel rather than a ref is deliberate; the
+   * pty's session id is private to the pane and re-minted on a cwd change, and
+   * routing around the pane would also skip the buffer that already absorbs
+   * "the shell has not finished starting". Stable, because MarkdownContent and
+   * CodeBlock are both memo'd.
+   */
+  const handleRunInTerminal = useCallback(
+    (command: string) => {
+      setIsTerminalDockOpen(true);
+      runInTerminal(terminalDockKey, command);
+    },
+    [setIsTerminalDockOpen, terminalDockKey]
   );
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
@@ -2407,6 +2430,7 @@ function BaseChatContent({
                               onMessageUpdate={onMessageUpdate}
                               submitElicitationResponse={submitElicitationResponse}
                               onOpenArtifact={handleOpenArtifact}
+                              onRunInTerminal={handleRunInTerminal}
                               workingDir={sessionWorkingDir}
                             />
                             {/* §6.1b: skeleton cards for tool calls whose args
@@ -2507,6 +2531,7 @@ function BaseChatContent({
             panel stays global, spans all groups". */}
         {!terminalDock && (
           <InAppTerminalDock
+            dockKey={terminalDockKey}
             open={isTerminalDockOpen}
             workingDir={sessionWorkingDir}
             onClose={() => setIsTerminalDockOpen(false)}

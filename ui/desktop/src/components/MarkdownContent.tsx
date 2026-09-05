@@ -15,9 +15,10 @@ import {
 } from '../styles/codeTheme';
 import { Button } from './ui/button';
 
-import { Check, Copy, Image as ImageIcon } from './icons/app-icons';
+import { Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import { normalizeExternalHttpUrl } from '../utils/externalUrl';
+import { runnableCommandFromCodeBlock } from '../utils/shellCommandBlock';
 import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
   imageSourceForPreview,
@@ -37,6 +38,7 @@ interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttrib
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
   knownFilePaths?: KnownFilePaths;
+  onRunInTerminal?: (command: string) => void;
 }
 
 interface MarkdownContentProps {
@@ -45,18 +47,45 @@ interface MarkdownContentProps {
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
   knownFilePaths?: KnownFilePaths;
+  /**
+   * Offer "Run" on shell code blocks, handing the command to this chat's
+   * in-app terminal. OPT-IN, and it has to be: eleven surfaces mount
+   * MarkdownContent — the announcement modal, tool-call arguments, the artifact
+   * panel, a notebook preview, a workflow warning, a knowledge node — and only
+   * one of them is a live chat with a terminal under it. An always-on button
+   * would put a shell affordance in a modal.
+   *
+   * Must be referentially stable: both this component and CodeBlock are memo'd,
+   * and a fresh closure each render defeats that for every block in the
+   * transcript on every streaming frame.
+   */
+  onRunInTerminal?: (command: string) => void;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
 const CodeBlock = memo(function CodeBlock({
   language,
+  fenceLanguage,
   children,
+  onRunInTerminal,
 }: {
   language: string;
+  /**
+   * The WHOLE fence identifier, which `language` is not.
+   *
+   * `language` comes from MarkdownCode's `/language-(\w+)/` and drives the
+   * header label and the highlighter; `\w` stops at a hyphen, so a
+   * ```shell-session fence arrives there as `shell`. The runnable decision must
+   * see `shell-session` — see utils/shellCommandBlock.ts.
+   */
+  fenceLanguage: string | null;
   children: string;
+  onRunInTerminal?: (command: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [sent, setSent] = useState(false);
   const timeoutRef = useRef<number | null>(null);
+  const sentTimeoutRef = useRef<number | null>(null);
 
   const handleCopy = async () => {
     try {
@@ -69,9 +98,27 @@ const CodeBlock = memo(function CodeBlock({
     }
   };
 
+  // Null unless this block is a shell COMMAND the caller can run — see
+  // utils/shellCommandBlock.ts for what that excludes and why (transcripts,
+  // prose, an empty block, a fence long enough to be a file rather than a
+  // command).
+  const runnableCommand = useMemo(
+    () => (onRunInTerminal ? runnableCommandFromCodeBlock(fenceLanguage, children) : null),
+    [onRunInTerminal, fenceLanguage, children]
+  );
+
+  const handleRun = () => {
+    if (!runnableCommand || !onRunInTerminal) return;
+    onRunInTerminal(runnableCommand);
+    setSent(true);
+    if (sentTimeoutRef.current) window.clearTimeout(sentTimeoutRef.current);
+    sentTimeoutRef.current = window.setTimeout(() => setSent(false), 2000);
+  };
+
   useEffect(() => {
     return () => {
       if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+      if (sentTimeoutRef.current) window.clearTimeout(sentTimeoutRef.current);
     };
   }, []);
 
@@ -125,16 +172,36 @@ const CodeBlock = memo(function CodeBlock({
         <span className="text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
           {language || 'code'}
         </span>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={handleCopy}
-          className="gap-1 text-[11px] text-text-muted hover:text-text-default"
-          title="Copy code"
-        >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          <span>{copied ? 'Copied' : 'Copy'}</span>
-        </Button>
+        <div className="flex items-center gap-1">
+          {/* Run sits to the LEFT so Copy keeps the position it has always had.
+              Copy is never REPLACED: this feature is the step
+              CodingAgentInlineCard deliberately stopped short of ("a command
+              the user runs, never one Biorouter runs"), and the old path has to
+              survive it. Nothing else here is a keyboard shortcut either — a
+              deliberate click is the whole consent. */}
+          {runnableCommand && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={handleRun}
+              className="gap-1 text-[11px] text-text-muted hover:text-text-default"
+              title="Run in the terminal below"
+            >
+              {sent ? <Check className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+              <span>{sent ? 'Sent' : 'Run'}</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={handleCopy}
+            className="gap-1 text-[11px] text-text-muted hover:text-text-default"
+            title="Copy code"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </Button>
+        </div>
       </div>
       {/* Code body */}
       <div className="w-full overflow-x-auto">{memoizedSyntaxHighlighter}</div>
@@ -390,17 +457,31 @@ const MarkdownCode = memo(
       onOpenArtifact,
       workingDir,
       knownFilePaths,
+      onRunInTerminal,
       ...props
     }: CodeProps,
     ref: React.Ref<HTMLElement>
   ) {
     const match = /language-(\w+)/.exec(className || '');
+    // The same identifier, unabridged. `\w` stops at a hyphen, so `match[1]` is
+    // `shell` for BOTH ```shell and ```shell-session — fine for a header label
+    // and a Prism alias, wrong for deciding whether a block may be executed,
+    // since the second one's body is a prompt character followed by output.
+    // Kept as a separate read so highlighting and the header keep byte-identical
+    // behaviour.
+    const fenceMatch = /language-([\w.+-]+)/.exec(className || '');
     const text = String(children);
     const artifact = !match
       ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
       : null;
     return !inline && match ? (
-      <CodeBlock language={match[1]}>{text.replace(/\n$/, '')}</CodeBlock>
+      <CodeBlock
+        language={match[1]}
+        fenceLanguage={fenceMatch ? fenceMatch[1] : null}
+        onRunInTerminal={onRunInTerminal}
+      >
+        {text.replace(/\n$/, '')}
+      </CodeBlock>
     ) : artifact && onOpenArtifact ? (
       <ArtifactLinkButton
         artifact={artifact}
@@ -513,6 +594,7 @@ const MarkdownContent = memo(function MarkdownContent({
   onOpenArtifact,
   workingDir,
   knownFilePaths,
+  onRunInTerminal,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -643,6 +725,7 @@ const MarkdownContent = memo(function MarkdownContent({
               onOpenArtifact={onOpenArtifact}
               workingDir={workingDir}
               knownFilePaths={knownFilePaths}
+              onRunInTerminal={onRunInTerminal}
             />
           ),
           p: ({ node: _node, ...props }) => (

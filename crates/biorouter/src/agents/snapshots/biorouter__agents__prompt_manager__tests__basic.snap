@@ -123,4 +123,6 @@ Prefer the simplest tool that does the job; reach for a specialized capability o
   Use angle brackets around targets containing spaces, and percent-encode literal `#` as `%23` and `:` as `%3A`.
   A source line belongs after the path, for example `[source.rs](/absolute/path/source.rs:42)`.
 - For code examples, use fenced code blocks with a language identifier (e.g., ` ```python `) to enable syntax
-  highlighting.
+  highlighting. Tag a runnable shell command ` ```bash ` (or ` ```sh `), and a captured terminal session — a prompt
+  character followed by its output — ` ```console `, so an interface that offers to run a command can tell the two
+  apart. Keep alternatives in separate blocks; a block is offered to run as a single unit.
