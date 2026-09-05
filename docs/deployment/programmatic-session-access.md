@@ -221,10 +221,13 @@ enumeration rather than a proof of completeness.
 
 ## Troubleshooting
 
-**`403` with a long refusal that mentions the header.** You sent no `X-Caller-Provider`, or a value
-that did not resolve private. Check the spelling against `GET /config/providers`. The refusal is
-identical for "this chat is private" and "there is no such chat", deliberately — so a `403` is not
-evidence the session exists.
+**`403` with a long refusal that points here.** You sent no `X-Caller-Provider`, or a value that did
+not resolve private. Check the spelling against `GET /config/providers`. The refusal names this page
+and deliberately does not name the header: its reader is far more often a model than a person, and a
+refused caller handed a header to add would read that as permission to retry, which is exactly what
+the refusal exists to foreclose. The mechanism lives here, where the reader is you. The refusal is
+also identical for "this chat is private" and "there is no such chat", deliberately — so a `403` is
+not evidence the session exists.
 
 **`403` saying the daemon was started without a user-action key.** A different state: this daemon
 holds no key with which to verify a human, which is normal for `just run-server`, a hand-run
