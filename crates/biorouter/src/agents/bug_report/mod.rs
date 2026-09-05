@@ -164,31 +164,34 @@ fn refuses_public_disclosure(tier: SessionClassification, tiers_enabled: bool) -
 
 /// The conversation to read the failures out of.
 ///
-/// Prefers the one already attached to `session` — the agent's dispatch path
-/// hands over a row that may carry it, and re-reading would cost a query for
-/// bytes already in hand. Falls back to the store, which is the case that
-/// matters: a turn's own tool responses are persisted as they complete, so a
-/// report raised right after a failure finds it there.
+/// ⚠ **Read from the store, not from `session.conversation`**, even though the
+/// row handed to `dispatch_tool_call` usually carries one. That copy is the
+/// snapshot `RewriteBasis::read_with_session` took at the TOP of this turn, so
+/// it is missing the current user's own message ("report a bug") and every tool
+/// call this turn has already made — which, for a report raised the moment
+/// something failed, is precisely the evidence being asked about. Preferring it
+/// to save a query is the shape of a bug that would only appear in the case the
+/// tool exists for.
+///
+/// The store read is a superset, so the turn-start snapshot is kept only as a
+/// fallback for a read that fails outright: a degraded report beats none.
 async fn conversation_for(
     session: &Session,
     session_manager: &SessionManager,
 ) -> ToolResult<Conversation> {
-    if let Some(conversation) = &session.conversation {
-        if !conversation.messages().is_empty() {
-            return Ok(conversation.clone());
-        }
-    }
-    let loaded = session_manager
-        .get_session(&session.id, true)
-        .await
-        .map_err(|error| {
+    match session_manager.get_session(&session.id, true).await {
+        Ok(loaded) => Ok(loaded
+            .conversation
+            .or_else(|| session.conversation.clone())
+            .unwrap_or_default()),
+        Err(error) => session.conversation.clone().ok_or_else(|| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("could not read this chat's history: {error}"),
                 None,
             )
-        })?;
-    Ok(loaded.conversation.unwrap_or_default())
+        }),
+    }
 }
 
 /// The digest handed back by [`Action::Analyze`], and spliced into the file
@@ -687,9 +690,17 @@ mod tests {
                 metadata: None,
             }));
         }
-        session.conversation = Some(Conversation::new_unvalidated(vec![content
+        // ⚠ PERSISTED, not merely attached to the in-memory row. The handler
+        // reads the store, because the row `dispatch_tool_call` is handed
+        // carries a snapshot from the top of the turn and is missing everything
+        // the turn has done since. A fixture that only set `session.conversation`
+        // would exercise a path production never takes — and it did, until this
+        // comment's change caught it.
+        let message = content
             .into_iter()
-            .fold(Message::assistant(), Message::with_content)]));
+            .fold(Message::assistant(), Message::with_content);
+        manager.add_message(&session.id, &message).await.unwrap();
+        session.conversation = Some(Conversation::new_unvalidated(vec![message]));
         (dir, manager, session)
     }
 
@@ -711,6 +722,41 @@ mod tests {
             "steps": ["Open a chat", "Ask for a chart of one row"],
             "expected": "The chart renders."
         }))
+    }
+
+    /// ⚠ The failure the report is about must be FOUND, even when the row the
+    /// agent hands over does not know about it.
+    ///
+    /// `dispatch_tool_call` receives the `Session` that
+    /// `RewriteBasis::read_with_session` snapshotted at the TOP of the turn, so
+    /// its `conversation` is missing the current user's message and every tool
+    /// call this turn has already made. Reading it "because it is already in
+    /// hand" saves a query and loses exactly the evidence a report raised the
+    /// moment something failed is about — a bug that appears only in the case
+    /// the tool exists for, and in no test that builds its fixture by hand.
+    ///
+    /// This fixture reproduces the divergence deliberately: the store holds a
+    /// hard failure, and the in-memory row holds an EMPTY conversation, which is
+    /// what a turn-start snapshot looks like on the first turn.
+    #[tokio::test]
+    async fn the_store_is_read_rather_than_the_turn_start_snapshot() {
+        let (_dir, manager, mut session) = session_with_failures(2).await;
+        session.conversation = Some(Conversation::default());
+
+        let result = handle_report_bug(
+            args(serde_json::json!({"action": "analyze"})),
+            &session,
+            manager,
+            None,
+        )
+        .await;
+        let body = body_of(&result);
+        assert!(
+            body.contains("2 total, 2 failed"),
+            "the turn-start snapshot was read instead of the store, so the failure \
+             being reported is invisible: {body}"
+        );
+        assert!(!body.contains("ASK THE USER"), "{body}");
     }
 
     /// ⚠ The push-back. An empty session plus no user description must produce

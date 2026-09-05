@@ -382,10 +382,11 @@ fn recent_user_text(conversation: &Conversation) -> Vec<String> {
 
 /// Assemble everything the report is written from.
 ///
-/// `conversation` is passed in rather than read from `session`, because the
-/// agent already holds the live one and a re-read would miss the turn in
-/// progress — which, for a bug report raised mid-failure, is the turn that
-/// matters.
+/// `conversation` is a parameter rather than read from `session` because the
+/// two disagree, and the caller is the one that knows which to use: the row
+/// handed to `dispatch_tool_call` carries the snapshot taken at the top of the
+/// turn, which is missing everything the turn has done since. See
+/// `bug_report::conversation_for`.
 pub fn collect(session: &Session, conversation: &Conversation) -> Evidence {
     let system = crate::session::SystemInfo::collect();
     let (failures, total_failed_calls, total_tool_calls, externalized_results) =
