@@ -12,9 +12,21 @@ import { Button } from './ui/button';
 import type { UserAttachment } from '../types/message';
 import { ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, splitComposerText } from '../utils/composerRefs';
+import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 
 const STEER_TITLE = 'Add to current turn without stopping';
 const STOP_AND_SEND_TITLE = 'Stop current turn, then send as a new turn';
+
+/**
+ * Hover text for an "Add now" button.
+ *
+ * The Cmd/Ctrl+Enter fallback in `ChatInput` steers the FRONT of the queue and
+ * only the front, so the chord is advertised on that row alone. Teaching it on
+ * every row would name a key that does something else (it would take message
+ * one) for every row but the first.
+ */
+const steerTitle = (isNext: boolean) =>
+  isNext ? `${STEER_TITLE} (${getSteerShortcutText()})` : STEER_TITLE;
 
 const SteerActionContent = () => (
   <>
@@ -40,6 +52,19 @@ interface QueuedMessage {
   attachments?: UserAttachment[];
   timestamp: number;
 }
+
+/**
+ * Is this message eligible for a soft interrupt?
+ *
+ * A soft interrupt is plain text — a message with attachments still has to wait
+ * for the turn to end (or stop it). Exported because `ChatInput`'s
+ * Cmd/Ctrl+Enter fallback steers the front of the queue, and a shortcut that
+ * re-derived eligibility would drift from the button it mirrors: the two must
+ * ask ONE question. The caller supplies the other half — whether steering is
+ * available at all (`onSteerMessage` here, `canSteer` there).
+ */
+export const canSteerMessage = (message: Pick<QueuedMessage, 'attachments'>): boolean =>
+  !message.attachments?.length;
 
 interface MessageQueueProps {
   queuedMessages: QueuedMessage[];
@@ -80,10 +105,8 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
     return null;
   }
 
-  // A soft interrupt is plain text — a message with attachments still has to
-  // wait for the turn to end (or stop it).
-  const canSteerMessage = (message: QueuedMessage) =>
-    Boolean(onSteerMessage) && !message.attachments?.length;
+  const isSteerable = (message: QueuedMessage) =>
+    Boolean(onSteerMessage) && canSteerMessage(message);
 
   const handleDragStart = (e: React.DragEvent, messageId: string) => {
     setDraggedItem(messageId);
@@ -194,7 +217,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             </span>
           )}
 
-          {canSteerMessage(nextMessage) && (
+          {isSteerable(nextMessage) && (
             <Button
               variant="ghost"
               size="sm"
@@ -203,7 +226,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                 onSteerMessage?.(nextMessage.id);
               }}
               className="h-6 px-1.5 gap-1 flex-shrink-0 text-text-muted hover:text-text-default"
-              title={STEER_TITLE}
+              title={steerTitle(true)}
               aria-label="Add this message to the current turn"
             >
               <SteerActionContent />
@@ -390,14 +413,18 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                 {formatTimestamp(message.timestamp)}
               </span>
 
-              {canSteerMessage(message) && (
+              {isSteerable(message) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => onSteerMessage?.(message.id)}
                   disabled={editingMessage === message.id}
                   className={`h-6 px-1.5 gap-1 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
-                  title={editingMessage === message.id ? 'Cannot send while editing' : STEER_TITLE}
+                  title={
+                    editingMessage === message.id
+                      ? 'Cannot send while editing'
+                      : steerTitle(index === 0)
+                  }
                   aria-label="Add this message to the current turn"
                 >
                   <SteerActionContent />

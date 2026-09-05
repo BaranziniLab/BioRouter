@@ -2,8 +2,9 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { MessageQueue } from './MessageQueue';
+import { MessageQueue, canSteerMessage } from './MessageQueue';
 import { refTag } from '../utils/resourceRefs';
+import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 
 const queuedMessage = {
   id: 'message-1',
@@ -86,6 +87,52 @@ describe('MessageQueue actions', () => {
       name: 'Stop the current turn and send this message as a new turn',
     });
     expect(within(stopAndSend).getByText('Stop & send')).toBeInTheDocument();
+  });
+});
+
+/**
+ * `canSteerMessage` is exported because `ChatInput`'s Cmd/Ctrl+Enter fallback
+ * steers the front of this queue. The button and the chord have to ask ONE
+ * question; a shortcut that re-derived eligibility would drift from the button
+ * it mirrors the moment either side gained a rule.
+ */
+describe('MessageQueue steer eligibility', () => {
+  it('is text-only, and says so to any caller', () => {
+    expect(canSteerMessage({})).toBe(true);
+    expect(canSteerMessage({ attachments: [] })).toBe(true);
+    expect(canSteerMessage({ attachments: [{ path: '/tmp/image.png', kind: 'image' }] })).toBe(
+      false
+    );
+  });
+});
+
+/**
+ * The chord steers the FRONT of the queue and only the front, so it is
+ * advertised on that row alone. Naming it on row two would name a key that does
+ * something else — it would take row one.
+ */
+describe('MessageQueue shortcut hint', () => {
+  const second = { id: 'message-2', content: 'and rerun the fit', timestamp: Date.now() };
+
+  it('teaches the chord on the next message, in the collapsed bar', () => {
+    renderQueue({ queuedMessages: [queuedMessage, second] });
+
+    expect(
+      screen.getByRole('button', { name: 'Add this message to the current turn' })
+    ).toHaveAttribute('title', expect.stringContaining(getSteerShortcutText()));
+  });
+
+  it('teaches it on the first expanded row and no other', async () => {
+    const user = userEvent.setup();
+    renderQueue({ queuedMessages: [queuedMessage, second] });
+
+    await user.click(screen.getByRole('button', { name: /queued\. Expand queue\./i }));
+    const [first, rest] = screen.getAllByRole('button', {
+      name: 'Add this message to the current turn',
+    });
+
+    expect(first).toHaveAttribute('title', expect.stringContaining(getSteerShortcutText()));
+    expect(rest).toHaveAttribute('title', 'Add to current turn without stopping');
   });
 });
 
