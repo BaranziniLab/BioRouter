@@ -309,7 +309,7 @@ fn redact_yaml_value(value: &mut serde_yaml::Value, redact_every_leaf: bool) {
     }
 }
 
-/// The session's own log files, newest first, capped at [`LOGS_TO_KEEP`].
+/// The session's own request logs, newest first, capped at [`LOGS_TO_KEEP`].
 ///
 /// Split out of [`generate_diagnostics`] to keep that function under the
 /// `too_many_lines` baseline, and because the walk is the one part of the
@@ -317,13 +317,38 @@ fn redact_yaml_value(value: &mut serde_yaml::Value, redact_every_leaf: bool) {
 /// these files while this reads them.
 type ZipOut<'a> = ZipWriter<Cursor<&'a mut Vec<u8>>>;
 
+/// How many bytes of component (`cli/`, `server/`) log the bundle will carry.
+///
+/// A daemon that has been up for a week writes megabytes; the tail is where the
+/// failure being reported is, and a report nobody can open helps nobody.
+const COMPONENT_LOG_BUDGET_BYTES: usize = 256 * 1024;
+
+/// Which component log directories are swept, and what each is called in the
+/// bundle. `debug/` is deliberately absent: it is written only under an
+/// explicit debug flag and carries whole payloads.
+const COMPONENT_LOG_DIRS: &[&str] = &["cli", "server"];
+
+/// The outcome of the request-log sweep, so [`generate_diagnostics`] can say
+/// which of the two very different "no logs" situations happened.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RequestLogSweep {
+    /// Files written into the bundle.
+    shipped: usize,
+    /// Files that existed but named a different session, or named none at all.
+    /// ⚠ This is the number that used to be invisible. A bundle with no logs
+    /// read identically whether the machine had never made a request or whether
+    /// every log on it was unattributable — and the second was the normal case.
+    excluded: usize,
+}
+
 fn push_session_logs(
     zip: &mut ZipOut<'_>,
     options: FileOptions,
     logs_dir: &std::path::Path,
     session_id: &str,
     notes: &mut Vec<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RequestLogSweep> {
+    let mut sweep = RequestLogSweep::default();
     let mut log_files: Vec<_> = match fs::read_dir(logs_dir) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok())
@@ -350,9 +375,8 @@ fn push_session_logs(
     // `log_belongs_to_session`. `take(LOGS_TO_KEEP)` on the *unfiltered*
     // list is what shipped other chats' prompts: the ten newest files on
     // this machine have nothing to do with the session being reported.
-    let mut shipped = 0usize;
     for entry in log_files.iter().rev() {
-        if shipped == LOGS_TO_KEEP {
+        if sweep.shipped == LOGS_TO_KEEP {
             break;
         }
         let path = entry.path();
@@ -366,6 +390,7 @@ fn push_session_logs(
             }
         };
         if !log_belongs_to_session(&String::from_utf8_lossy(&bytes), session_id) {
+            sweep.excluded += 1;
             continue;
         }
         let name = path
@@ -374,9 +399,177 @@ fn push_session_logs(
             .unwrap_or_default();
         zip.start_file(format!("logs/{}", name), options)?;
         zip.write_all(&bytes)?;
+        sweep.shipped += 1;
+    }
+    Ok(sweep)
+}
+
+/// Is this tracing line one the bundle may carry?
+///
+/// The component logs are the daemon's own, shared by every session on the
+/// machine, so the rule that governs the request logs — ship only what this
+/// session produced — cannot be applied: a tracing line names no session.
+///
+/// The line drawn instead is by LEVEL. `WARN` and `ERROR` are where a failure
+/// announces itself, and the tracing layer emits them for control-flow events:
+/// an extension that would not load, a provider that returned 429, a path that
+/// could not be read. `INFO`/`DEBUG`/`TRACE` are where content goes — a request
+/// body, a tool's output, a prompt fragment — and shipping those would put
+/// another chat's material into a report about this one, which is exactly the
+/// defect `log_belongs_to_session` exists to prevent.
+///
+/// ⚠ A WARN/ERROR line can still quote a path or an identifier, so this is a
+/// large reduction in exposure, not a redactor. The bundle is saved to disk by
+/// a native dialog and attached by the user deliberately; the *issue body* the
+/// bug-report tool posts is scrubbed separately and never carries these lines.
+fn is_diagnostic_level_line(line: &str) -> bool {
+    // `2026-09-05T17:34:53.579160Z  WARN biorouter::…: message`
+    let Some(rest) = line.split_once('Z').map(|(_, rest)| rest.trim_start()) else {
+        return false;
+    };
+    rest.starts_with("WARN") || rest.starts_with("ERROR")
+}
+
+/// The tail of the newest `cli/` and `server/` log, filtered to WARN/ERROR.
+///
+/// ⚠ **These were absent from every bundle ever produced**, and not by policy:
+/// the sweep above walks the ROOT of `logs/` for `*.jsonl` only, so
+/// `logs/server/<date>/*.log` and `logs/cli/<date>/*.log` were never candidates.
+/// The daemon's own startup failures, extension-load errors and provider errors
+/// — the first thing anyone reading a bug report looks for — were in neither the
+/// bundle nor the notes.
+fn push_component_logs(
+    zip: &mut ZipOut<'_>,
+    options: FileOptions,
+    logs_dir: &std::path::Path,
+    notes: &mut Vec<String>,
+) -> anyhow::Result<usize> {
+    let mut shipped = 0usize;
+    for component in COMPONENT_LOG_DIRS {
+        let Some(path) = newest_component_log(&logs_dir.join(component)) else {
+            continue;
+        };
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                notes.push(format!(
+                    "logs/{component}: could not read {}: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let filtered = tail_diagnostic_lines(&raw, COMPONENT_LOG_BUDGET_BYTES);
+        if filtered.is_empty() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{component}.log"));
+        zip.start_file(format!("logs/{component}/{name}"), options)?;
+        zip.write_all(filtered.as_bytes())?;
         shipped += 1;
     }
-    Ok(())
+    Ok(shipped)
+}
+
+/// The most recently modified `*.log` under `<component>/<date>/`.
+fn newest_component_log(component_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for day in fs::read_dir(component_dir).ok()?.filter_map(Result::ok) {
+        let day_path = day.path();
+        if !day_path.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&day_path) else {
+            continue;
+        };
+        for file in files.filter_map(Result::ok) {
+            let path = file.path();
+            if path.extension().is_some_and(|ext| ext == "log") {
+                let modified = file
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if newest.as_ref().is_none_or(|(best, _)| modified > *best) {
+                    newest = Some((modified, path));
+                }
+            }
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+/// The WARN/ERROR lines of `raw`, newest last, within `budget` bytes.
+///
+/// The tail rather than the head: a log that has outgrown the budget has done
+/// so because the daemon ran for a long time, and the failure being reported
+/// happened at the end of it.
+fn tail_diagnostic_lines(raw: &str, budget: usize) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut size = 0usize;
+    for line in raw.lines().rev() {
+        if !is_diagnostic_level_line(line) {
+            continue;
+        }
+        size += line.len() + 1;
+        if size > budget {
+            break;
+        }
+        kept.push(line);
+    }
+    kept.reverse();
+    if kept.is_empty() {
+        return String::new();
+    }
+    format!(
+        "# Only WARN and ERROR lines are included; INFO/DEBUG carry other chats' content.\n\
+         # Newest last, tail-limited to {budget} bytes.\n{}\n",
+        kept.join("\n")
+    )
+}
+
+/// What the log sweep found, in a sentence a person can act on.
+///
+/// Pure, so the wording is testable without building a zip.
+fn log_summary(sweep: &RequestLogSweep, component_logs: usize) -> String {
+    let mut out = String::from("Log files in this bundle\n========================\n\n");
+    out.push_str(&format!(
+        "Request logs (logs/*.jsonl) for this session: {}\n",
+        sweep.shipped
+    ));
+    if sweep.excluded > 0 {
+        out.push_str(&format!(
+            "Request logs left out because their header names a different session, or \
+             names none at all: {}\n",
+            sweep.excluded
+        ));
+        if sweep.shipped == 0 {
+            out.push_str(
+                "\n  ⚠ Every request log on this machine was unattributable, so NONE of this \n\
+                 \x20   session's requests are in this bundle. That is a known shape of an older \n\
+                 \x20   build: the header line was only stamped with a session id for scheduled \n\
+                 \x20   jobs and sub-agents, never for an ordinary chat turn. The transcript in \n\
+                 \x20   session.json is complete and is the better evidence either way.\n",
+            );
+        }
+    }
+    out.push_str(&format!(
+        "\nComponent logs (logs/cli/, logs/server/): {component_logs}\n"
+    ));
+    if component_logs > 0 {
+        out.push_str(
+            "  Filtered to WARN and ERROR lines only, newest last. INFO and DEBUG lines are \n\
+             \x20 excluded because they carry content from every chat on this machine, not just \n\
+             \x20 the one being reported.\n",
+        );
+    }
+    if sweep.shipped == 0 && sweep.excluded == 0 && component_logs == 0 {
+        out.push_str("\nNo log files were found on this machine at all.\n");
+    }
+    out
 }
 
 /// Every file under `scheduled_workflows/`, each read best-effort.
@@ -458,7 +651,24 @@ pub async fn generate_diagnostics(
         let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        push_session_logs(&mut zip, options, &logs_dir, session_id, &mut notes)?;
+        let sweep = push_session_logs(&mut zip, options, &logs_dir, session_id, &mut notes)?;
+        let component_logs = push_component_logs(&mut zip, options, &logs_dir, &mut notes)?;
+
+        // ⚠ Written ALWAYS, and that is the fix. The log sweep used to report
+        // nothing at all: `collection-notes.txt` appears only when a file could
+        // not be *read*, so a bundle whose every request log was excluded as
+        // unattributable looked exactly like a bundle from a machine that had
+        // never made a request. The second reading was the natural one and the
+        // first was the truth on every desktop turn, because the interactive
+        // path did not scope a session id onto the log header.
+        //
+        // Deliberately NOT folded into `collection-notes.txt`: that file's
+        // contract is "a part could not be collected", and its absence is a
+        // signal a test pins. "There are no logs on this machine" is not a
+        // failure, and an unconditional summary is what makes absence legible
+        // without overloading a failure channel.
+        zip.start_file("logs-summary.txt", options)?;
+        zip.write_all(log_summary(&sweep, component_logs).as_bytes())?;
 
         // The transcript is the most valuable thing in the bundle and still not
         // worth failing over: logs plus system info are a usable report, and no
@@ -764,6 +974,166 @@ mod tests {
         // Still diagnostic: the shape of the config survives.
         assert!(config.contains("BIOROUTER_PROVIDER: anthropic"), "{config}");
         assert!(config.contains("SPOKEAgent"), "{config}");
+    }
+
+    /// The summary distinguishes "there were none" from "there were some and
+    /// none of them could be attributed".
+    ///
+    /// ⚠ These two used to be the SAME bundle: an empty `logs/` directory and a
+    /// directory full of `"session_id":null` headers both produced a zip with no
+    /// `logs/` entry and no note. The second was the state of every machine
+    /// running an ordinary chat, so a reader who took the bundle at face value
+    /// concluded the app had made no requests.
+    #[test]
+    fn the_log_summary_separates_absent_logs_from_unattributable_ones() {
+        let none = log_summary(&RequestLogSweep::default(), 0);
+        assert!(
+            none.contains("No log files were found on this machine at all"),
+            "{none}"
+        );
+        assert!(!none.contains("unattributable"), "{none}");
+
+        let all_excluded = log_summary(
+            &RequestLogSweep {
+                shipped: 0,
+                excluded: 7,
+            },
+            0,
+        );
+        assert!(
+            all_excluded.contains("names none at all: 7"),
+            "{all_excluded}"
+        );
+        assert!(
+            all_excluded.contains("Every request log on this machine was unattributable"),
+            "{all_excluded}"
+        );
+        assert!(
+            !all_excluded.contains("No log files were found on this machine at all"),
+            "seven files were found; saying none were is the lie this fixes: {all_excluded}"
+        );
+    }
+
+    /// Only WARN and ERROR survive the component-log filter.
+    ///
+    /// The level test is what stands in for `log_belongs_to_session` on a log
+    /// that names no session: INFO and DEBUG are where another chat's content
+    /// is, so a filter that let them through would re-open the defect the
+    /// request-log attribution rule closed.
+    #[test]
+    fn component_logs_keep_only_diagnostic_levels() {
+        let raw = concat!(
+            "2026-09-05T17:34:53.579160Z  INFO biorouterd::x: listening on 127.0.0.1:1\n",
+            "2026-09-05T17:34:54.000000Z DEBUG biorouter::y: prompt fragment from another chat\n",
+            "2026-09-05T17:34:55.000000Z  WARN biorouter::z: extension failed to load\n",
+            "2026-09-05T17:34:56.000000Z ERROR biorouter::w: provider returned 429\n",
+            "2026-09-05T17:34:57.000000Z TRACE biorouter::v: noise\n",
+        );
+        let filtered = tail_diagnostic_lines(raw, 64 * 1024);
+        assert!(filtered.contains("extension failed to load"), "{filtered}");
+        assert!(filtered.contains("provider returned 429"), "{filtered}");
+        assert!(!filtered.contains("listening on"), "{filtered}");
+        assert!(
+            !filtered.contains("prompt fragment from another chat"),
+            "a DEBUG line carries other sessions' content: {filtered}"
+        );
+        assert!(!filtered.contains("noise"), "{filtered}");
+        // Order is preserved, newest last, so a reader scans down to the failure.
+        let warn = filtered.find("extension failed").unwrap();
+        let error = filtered.find("provider returned").unwrap();
+        assert!(warn < error, "{filtered}");
+    }
+
+    /// A log with nothing but INFO produces no entry rather than an empty file.
+    #[test]
+    fn a_component_log_with_no_warnings_ships_nothing() {
+        let raw = "2026-09-05T17:34:53.579160Z  INFO biorouterd::x: fine\n";
+        assert!(tail_diagnostic_lines(raw, 1024).is_empty());
+        assert!(tail_diagnostic_lines("", 1024).is_empty());
+        // A line the parser cannot place is not silently promoted.
+        assert!(tail_diagnostic_lines("panicked at 'boom'\n", 1024).is_empty());
+    }
+
+    /// The tail is kept, not the head: a long-running daemon's failure is at
+    /// the end of its log.
+    #[test]
+    fn the_component_log_tail_is_what_survives_the_budget() {
+        let mut raw = String::new();
+        for i in 0..500 {
+            raw.push_str(&format!(
+                "2026-09-05T17:34:53.579160Z ERROR biorouter::x: failure number {i}\n"
+            ));
+        }
+        let filtered = tail_diagnostic_lines(&raw, 512);
+        assert!(filtered.contains("failure number 499"), "{filtered}");
+        assert!(!filtered.contains("failure number 0\n"), "{filtered}");
+        assert!(filtered.len() < 1024, "{}", filtered.len());
+    }
+
+    /// Every bundle carries the summary, whatever the sweep found.
+    #[tokio::test(flavor = "current_thread")]
+    async fn every_bundle_carries_a_log_summary() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let summary = entries
+            .iter()
+            .find(|(name, _)| name == "logs-summary.txt")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("every bundle explains what its log sweep found");
+        assert!(summary.contains("Request logs"), "{summary}");
+    }
+
+    /// The daemon's own log reaches the bundle at all.
+    ///
+    /// ⚠ It never did: the sweep walked the ROOT of `logs/` for `*.jsonl`, so
+    /// `logs/server/<date>/*.log` was not a candidate under any circumstances.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_daemon_s_own_warnings_reach_the_bundle() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let day = Paths::in_state_dir("logs")
+            .join("server")
+            .join("2026-09-05");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(
+            day.join("20260905_103453-biorouterd.log"),
+            "2026-09-05T17:34:53.579160Z  INFO biorouterd::x: listening\n\
+             2026-09-05T17:34:55.000000Z ERROR biorouter::z: the extension did not load\n",
+        )
+        .unwrap();
+
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let (name, bytes) = entries
+            .iter()
+            .find(|(name, _)| name.starts_with("logs/server/"))
+            .expect("the daemon's own log is in the bundle");
+        let text = String::from_utf8_lossy(bytes);
+        assert!(name.ends_with("-biorouterd.log"), "{name}");
+        assert!(text.contains("the extension did not load"), "{text}");
+        assert!(!text.contains("listening"), "INFO must not ship: {text}");
     }
 
     #[test]

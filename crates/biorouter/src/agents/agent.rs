@@ -34,7 +34,7 @@ use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
     PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
-    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME, PLATFORM_REPORT_BUG_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
@@ -864,6 +864,19 @@ pub(super) struct CodingAgentBridgePlan {
     targets: Vec<CodingAgentBridgeTarget>,
     extension_targets: Vec<CodingAgentBridgeExtensionTarget>,
     pub(super) delegation_available: bool,
+    /// The bug reporter is on this turn's bridge.
+    ///
+    /// ⚠ A flag rather than a target, because the reporter belongs to no
+    /// extension. Every other bridged tool is reached through a
+    /// `CodingAgentBridgeTarget` (a bundled capability) or a
+    /// `CodingAgentBridgeExtensionTarget`, and `enforce_tool_access` re-checks
+    /// that grant at dispatch. Filing a bug is not a capability the user can
+    /// switch off in Settings — its one gate is whether a person can be asked
+    /// to approve the publication at all, exactly as in the main roster
+    /// (`PlatformToolGates::bug_report`). Hanging it off the Knowledge target,
+    /// which is how the two ingest tools ride, would gate bug reporting on a
+    /// knowledge base.
+    bug_report: bool,
 }
 
 impl CodingAgentBridgePlan {
@@ -1178,6 +1191,12 @@ fn coding_agent_bridge_policy_allows_tool(tool_name: &str) -> bool {
         .iter()
         .any(|policy| policy.tools.contains(&tool_name))
         || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name)
+        // ⚠ Deliberately NOT added to `CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS`.
+        // That list is consulted by `target_for_tool`, which matches it only
+        // under the **knowledge** target — right for the two ingest tools,
+        // which write to a knowledge base, and wrong here: it would mean a chat
+        // without Knowledge enabled cannot report a bug.
+        || tool_name == PLATFORM_REPORT_BUG_TOOL_NAME
 }
 
 struct BridgedChildExtensionGrant<'a> {
@@ -1485,6 +1504,21 @@ impl ChatBridgeDispatch {
             );
         }
         let name = call.name.as_ref();
+        // ⚠ Before the grant lookup, because the reporter has no grant to find:
+        // it belongs to no capability, so `target_for_tool` returns `None` and
+        // the `else` below would refuse it as "not in this turn's bridge". Its
+        // re-check is the same flag the plan was built from, so a child that
+        // was offered the tool on a daemon that could ask a person cannot use
+        // it on one that cannot.
+        if name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            return if self.plan.bug_report {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Tool '{name}' is not in this turn's coding-agent bridge"
+                ))
+            };
+        }
         if let Some(grant) = self.plan.target_for_tool(name) {
             if !self
                 .extensions
@@ -1606,6 +1640,60 @@ impl ChatBridgeDispatch {
             Some(cancel),
             capability,
             Some(Arc::clone(&self.ingest_provider)),
+        )
+        .await
+        {
+            Ok(content) => Ok(CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            Err(error) => Ok(CallToolResult {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        }
+    }
+
+    /// The bug reporter, for a coding-agent child.
+    ///
+    /// Modelled on [`Self::dispatch_ingest_conversation`] and here for the same
+    /// structural reason: `ChatBridgeDispatch::dispatch` hands everything it
+    /// does not route by name to the `ExtensionManager`, which has never heard
+    /// of a `platform__*` tool, so a bridged platform tool without an arm here
+    /// answers `Tool not found` — after the child has already written a whole
+    /// report.
+    ///
+    /// It takes no `CallCapability`. The handler's own privacy gate reads the
+    /// SESSION's classification rather than the caller's, which is the stronger
+    /// of the two and the right one for a question about publishing a chat's
+    /// contents. On this path the distinction is moot anyway: both coding-agent
+    /// providers are `ProviderTier::Public`, so Gate A has already refused to
+    /// bind one to a private chat.
+    async fn dispatch_report_bug(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.as_ref();
+        let session = self
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
+        let arguments = call
+            .arguments
+            .map(Value::Object)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        match crate::agents::bug_report::handle_report_bug(
+            arguments,
+            &session,
+            Arc::clone(&self.session_manager),
+            Some(cancel),
         )
         .await
         {
@@ -1812,6 +1900,9 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
             return self
                 .dispatch_ingest_conversation(session_id, call, capability, cancel)
                 .await;
+        }
+        if name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            return self.dispatch_report_bug(session_id, call, cancel).await;
         }
 
         let mutation = tool_catalog_mutation(&name);
@@ -3541,6 +3632,52 @@ where
 /// the request, and persist the elicitation prompt under its own session id
 /// (#40). A request scoped to another session neither wakes nor is drained
 /// by this loop.
+/// Which of two things happened while the tool-gating step was running.
+pub(crate) enum GateWake<T> {
+    /// Gating finished; this is its result.
+    Ready(T),
+    /// A user-action card was queued and is waiting to be surfaced.
+    ElicitationReady,
+}
+
+/// Race the tool-gating step against a card that needs a person.
+///
+/// ⚠ The THIRD wake site of this shape, and it was the missing one.
+/// [`next_provider_wake`] races the provider call and [`next_batch_wake`] races
+/// the batch, both because a tool parked inside them would otherwise hold its
+/// card until the thing it is parked in finishes — which it cannot, because the
+/// card is what unblocks it.
+///
+/// Gating looked like it could not park, and for an EXTENSION tool it cannot:
+/// `ExtensionManager::dispatch_tool_call` hands back a `ToolCallResult` whose
+/// `result` is a deferred future, so the tool's body runs later, inside the
+/// batch. But the agent loop dispatches the `platform__*` tools ITSELF, and
+/// those branches `.await` their handler and wrap the finished value
+/// (`ToolCallResult::from` is `future::ready`). Their whole body therefore runs
+/// **here**, in `handle_approved_and_denied_tools`'s sequential loop, before
+/// `combined` exists and before `next_batch_wake` is ever entered.
+///
+/// Measured: `platform__report_bug` parked its approval, the card was published
+/// to `ActionRequiredManager`, and `next_batch_wake` logged not one entry for
+/// the whole turn. The user saw a turn that stopped with no dialog, and the
+/// parked call would have sat out its full time-to-live unanswerable.
+///
+/// It is `install_extension`-shaped tools that are FINE, which is the opposite
+/// of the first guess: they are extension tools, so their bodies run in the
+/// batch where the drain is already raced.
+pub(crate) async fn next_gate_wake<T, F>(gate: &mut F, session_id: &str) -> GateWake<T>
+where
+    F: std::future::Future<Output = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = ActionRequiredManager::global().request_arrived(session_id) => {
+            GateWake::ElicitationReady
+        }
+        ready = gate => GateWake::Ready(ready),
+    }
+}
+
 pub(crate) async fn next_batch_wake<T, S>(
     cancel_token: &Option<CancellationToken>,
     combined: &mut S,
@@ -4817,6 +4954,19 @@ impl Agent {
                 warn!("Failed to save elicitation message to session: {}", e);
             }
             messages.push(elicitation_message);
+        }
+        // A card that is raised but never delivered leaves the user looking at a
+        // turn that has silently stopped: no dialog, no explanation, and a
+        // parked call sitting out its whole time-to-live unanswerable. That
+        // failure is invisible from both ends — the tool is waiting correctly
+        // and the client is reading correctly — so the one place that can say
+        // whether a card was handed to the stream says it.
+        if !messages.is_empty() {
+            debug!(
+                session_id,
+                cards = messages.len(),
+                "surfacing user-action cards into the reply stream"
+            );
         }
         messages
     }
@@ -6515,6 +6665,7 @@ impl Agent {
         &self,
         tools: &[Tool],
         delegation_available: bool,
+        bug_report_available: bool,
         targets: &[CodingAgentBridgeTarget],
         extension_targets: &[CodingAgentBridgeExtensionTarget],
     ) -> Vec<Tool> {
@@ -6543,13 +6694,24 @@ impl Agent {
                 || name == crate::agents::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
-            let target_enabled = targets.iter().any(|target| {
-                target.tools.contains(&name)
-                    || (target.target.key() == "knowledge"
-                        && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
-            }) || extension_targets
-                .iter()
-                .any(|target| target.tools.iter().any(|tool| tool == name));
+            // ⚠ The bug reporter's gate is NOT a capability being enabled. It
+            // belongs to no extension, so there is no target to hang it off,
+            // and its one precondition is that a person can be asked to approve
+            // the publication — the same `user_proof_available()` that decides
+            // whether the main roster offers it. Riding on the Knowledge target
+            // like the two ingest tools would mean a chat without a knowledge
+            // base cannot report a bug.
+            let bug_report_tool =
+                name == crate::agents::platform_tools::PLATFORM_REPORT_BUG_TOOL_NAME;
+            let target_enabled = bug_report_tool
+                || targets.iter().any(|target| {
+                    target.tools.contains(&name)
+                        || (target.target.key() == "knowledge"
+                            && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
+                })
+                || extension_targets
+                    .iter()
+                    .any(|target| target.tools.iter().any(|tool| tool == name));
             let policy_allows = coding_agent_bridge_policy_allows_tool(name)
                 || extension_targets
                     .iter()
@@ -6559,6 +6721,7 @@ impl Agent {
                 && policy_allows
                 && target_enabled
                 && (!delegation_tool || delegation_available)
+                && (!bug_report_tool || bug_report_available)
                 && seen.insert(name.to_string())
             {
                 bridged.push(prepare_coding_agent_bridge_tool(tool));
@@ -6623,11 +6786,21 @@ impl Agent {
             bridge_candidates.push(platform_tools::ingest_conversation_tool());
             bridge_candidates.push(platform_tools::ingest_source_tool());
         }
+        // The reporter is an Agent-owned tool, so it is not in `tools` (which is
+        // the model's own roster, already filtered) unless the main gate offered
+        // it. Push it as a candidate on the same condition the main roster uses,
+        // and let `prepare_coding_agent_bridge_tools` make the final call —
+        // ONE decision, in one place, rather than two that can disagree.
+        let bug_report_available = crate::pending_user_action::user_proof_available();
+        if bug_report_available {
+            bridge_candidates.push(platform_tools::report_bug_tool());
+        }
         let delegation_available = coding_agent_bridge_can_delegate(tools, workspace_enabled);
         let tools = self
             .prepare_coding_agent_bridge_tools(
                 &bridge_candidates,
                 delegation_available,
+                bug_report_available,
                 &targets,
                 &extension_targets,
             )
@@ -6638,6 +6811,7 @@ impl Agent {
             targets,
             extension_targets,
             delegation_available,
+            bug_report: bug_report_available,
         })
     }
 
@@ -6847,6 +7021,33 @@ impl Agent {
             let result = self
                 .handle_manage_workflow(arguments, session, cancellation_token.clone())
                 .await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
+        // The agent-callable bug reporter. Dispatched here rather than as an
+        // extension for the reason `platform__ingest_source` is: it needs the
+        // session row and the session manager, which the extension manager has
+        // no access to. Its `file` half parks on a proof-backed approval, so it
+        // is advertised only where a person can be asked (see
+        // `PlatformToolGates::bug_report`).
+        if tool_call.name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = crate::agents::bug_report::handle_report_bug(
+                arguments,
+                session,
+                Arc::clone(&self.config.session_manager),
+                cancellation_token.clone(),
+            )
+            .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -7510,13 +7711,14 @@ impl Agent {
             .await
     }
 
-    /// The three gates that decide which `platform__*` tools this agent offers
-    /// — sampled HERE, once, and passed to
+    /// The gates that decide which `platform__*` tools this agent offers —
+    /// sampled HERE, once, and passed to
     /// [`platform_tools::PlatformToolGates::tools`].
     ///
-    /// This is the only place that can read all three: the scheduler handle and
-    /// the Knowledge capability are per-agent state, and the blob flag is a
-    /// process-global that a gate must never re-read for itself.
+    /// This is the only place that can read all of them: the scheduler handle
+    /// and the Knowledge capability are per-agent state, and the blob and
+    /// user-proof flags are process-globals a gate must never re-read for
+    /// itself.
     ///
     /// It has exactly ONE caller today — [`Agent::list_tools_for`]. That is not
     /// a claim that other readers exist and agree; it is the rule for the next
@@ -7541,8 +7743,13 @@ impl Agent {
             // write?) narrows the tool's own action list rather than hiding it —
             // `list` and `read` are useful on a daemon that can never approve
             // anything. The field exists so a future condition lands here beside
-            // the others instead of becoming a fifth `if` in `list_tools_for`.
+            // the others instead of becoming a sixth `if` in `list_tools_for`.
             workflows: true,
+            // Filing parks on a proof-backed approval, which a daemon holding
+            // no proof-of-user key can never grant. Sampled here, once, for the
+            // reason every other gate is: a process-global read inside the gate
+            // itself is a second read the value could change between.
+            bug_report: crate::pending_user_action::user_proof_available(),
         }
     }
 
@@ -9170,16 +9377,37 @@ impl Agent {
                     } else {
                         (None, None)
                     };
-                let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL
+                // The chat turn's provider call runs with this session in scope,
+                // so `RequestLog::start` can stamp `session_id` into the header
+                // line of `llm_request.*.jsonl`.
+                //
+                // ⚠ Without it that header is `null` for every desktop and CLI
+                // turn — measured, 49 of 49 files on the development machine —
+                // and `diagnostics::log_belongs_to_session` fails closed on an
+                // unattributable log. So the diagnostics bundle shipped ZERO log
+                // files while its own dialog promised "Recent log files", and
+                // the omission was silent because `collection-notes.txt` only
+                // reports collection *failures*. The scheduler and the subagent
+                // handler already scope their turns the same way; the interactive
+                // path was the one that did not.
+                //
+                // Placed on the awaited call, not around the returned stream:
+                // `RequestLog::start` sits at the top of every provider's
+                // `stream`/`complete` body, which is inside this await. The same
+                // reasoning is what makes the bridge-URL scope above correct.
+                let mut stream = crate::session_context::SESSION_ID
                     .scope(
-                        bridge_url,
-                        Self::stream_response_from_provider(
-                            iteration_provider,
-                            &system_prompt,
-                            conversation_with_moim.messages(),
-                            &tools,
-                            &toolshim_tools,
-                            live_steer_receiver,
+                        Some(session_config.id.clone()),
+                        coding_agent_bridge::ACTIVE_BRIDGE_URL.scope(
+                            bridge_url,
+                            Self::stream_response_from_provider(
+                                iteration_provider,
+                                &system_prompt,
+                                conversation_with_moim.messages(),
+                                &tools,
+                                &toolshim_tools,
+                                live_steer_receiver,
+                            ),
                         ),
                     )
                     .await?;
@@ -9537,19 +9765,52 @@ impl Agent {
                                         &request_to_response_map,
                                     ).await;
                                 } else {
+                                    // ⚠ Raced against a card that needs a person, and NOT
+                                    // merely awaited. The `platform__*` tools are dispatched
+                                    // by the agent loop rather than the extension manager, so
+                                    // their bodies run inside this call instead of later in
+                                    // the batch — and one that parks an approval here would
+                                    // hold its card until gating finishes, which it cannot,
+                                    // because the card is what unblocks it. See
+                                    // `next_gate_wake`.
+                                    //
+                                    // The braces are load-bearing: the pinned future holds a
+                                    // mutable borrow of `remaining_requests`, which the rest
+                                    // of this block reads, so it has to be dropped the moment
+                                    // gating returns.
                                     let (
                                         inspection_results,
                                         permission_check_result,
                                         catalog_mutation_request_ids,
                                         mut tool_futures,
-                                    ) = self.inspect_and_gate_tool_requests(
-                                        &mut remaining_requests,
-                                        &conversation,
-                                        biorouter_mode,
-                                        &session,
-                                        &request_to_response_map,
-                                        cancel_token.clone(),
-                                    ).await?;
+                                    ) = {
+                                        let gate = self.inspect_and_gate_tool_requests(
+                                            &mut remaining_requests,
+                                            &conversation,
+                                            biorouter_mode,
+                                            &session,
+                                            &request_to_response_map,
+                                            cancel_token.clone(),
+                                        );
+                                        futures::pin_mut!(gate);
+                                        loop {
+                                            match next_gate_wake(&mut gate, &session_config.id)
+                                                .await
+                                            {
+                                                GateWake::Ready(gated) => break gated?,
+                                                GateWake::ElicitationReady => {
+                                                    for msg in self
+                                                        .drain_elicitation_messages(
+                                                            &session_config.id,
+                                                        )
+                                                        .await
+                                                    {
+                                                        yield AgentEvent::Message(msg);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    };
                                     for request in &remaining_requests {
                                         if let Ok(tool_call) = &request.tool_call {
                                             request_to_executed_tool_call
@@ -12049,12 +12310,14 @@ mod tests {
             knowledge: true,
             session_blobs: true,
             workflows: true,
+            bug_report: true,
         };
         let none = PlatformToolGates {
             scheduler: false,
             knowledge: false,
             session_blobs: false,
             workflows: false,
+            bug_report: false,
         };
 
         assert_eq!(
@@ -12108,6 +12371,45 @@ mod tests {
             ),
             vec![PLATFORM_MANAGE_WORKFLOW_TOOL_NAME]
         );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    bug_report: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_REPORT_BUG_TOOL_NAME]
+        );
+    }
+
+    /// ⚠ On a daemon that cannot obtain a person's proof, the bug reporter is
+    /// WITHHELD -- both halves, including the read-only analysis.
+    ///
+    /// `biorouter serve` spawns its daemon with `Stdio::null()` and therefore
+    /// holds no proof-of-user key, so the approval the file half parks on
+    /// refuses forever. A tool advertised there would let the model produce a
+    /// finished report and then discover it has nowhere to put it, which is the
+    /// exact failure `install_extension`'s `can_ask_a_person` gate exists to
+    /// prevent -- and the failure is worse here, because the report is written
+    /// before the refusal is met.
+    #[test]
+    fn the_bug_reporter_is_withheld_where_no_person_can_approve_it() {
+        use platform_tools::PlatformToolGates;
+        let offered = |bug_report: bool| {
+            PlatformToolGates {
+                scheduler: true,
+                knowledge: true,
+                session_blobs: true,
+                workflows: false,
+                bug_report,
+            }
+            .tools(None)
+            .into_iter()
+            .any(|tool| tool.name == PLATFORM_REPORT_BUG_TOOL_NAME)
+        };
+        assert!(offered(true));
+        assert!(!offered(false));
     }
 
     #[test]
@@ -14459,6 +14761,141 @@ mod tests {
         assert!(restricted.contains("not available"), "{restricted}");
     }
 
+    /// The bug reporter is on a coding-agent child's bridge, and its dispatch
+    /// arm exists.
+    ///
+    /// ⚠ Both halves, in one test, because either alone is a trap. Advertising
+    /// it without the arm hands the child a call that answers `Tool not found`
+    /// AFTER it has written a whole report; adding the arm without advertising
+    /// it leaves a route nothing can reach. The two live in different functions
+    /// hundreds of lines apart and neither refers to the other.
+    ///
+    /// It is gated on `user_proof_available()` and NOT on any capability being
+    /// enabled — this session has only the one test extension, no Knowledge and
+    /// no Developer, and the reporter must still be offered.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_bug_reporter_is_bridged_to_a_coding_agent_child_with_a_route() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == PLATFORM_REPORT_BUG_TOOL_NAME),
+            "a user in a Claude Code or Codex chat must be able to say \"report a bug\": {:?}",
+            plan.tools
+                .iter()
+                .map(|t| t.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+        let call = CallToolRequestParams {
+            name: PLATFORM_REPORT_BUG_TOOL_NAME.into(),
+            arguments: Some(object!({"action": "analyze"})),
+            meta: None,
+            task: None,
+        };
+        dispatch
+            .enforce_tool_access(&session_id, &call)
+            .await
+            .expect(
+                "the reporter has no capability grant to find, so the access check \
+                     must admit it explicitly rather than falling through to the refusal",
+            );
+
+        let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
+            &dispatch,
+            &session_id,
+            call,
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the bridged call must reach the handler");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(
+            !text.contains("not found"),
+            "the advertised tool has no route in the bridge's dispatch: {text}"
+        );
+        assert!(
+            text.contains("Biorouter v") || text.contains("ASK THE USER"),
+            "the handler's own answer must come back through the bridge: {text}"
+        );
+    }
+
+    /// ⚠ And it is withheld where no person can approve the publication.
+    ///
+    /// Both halves again: it is not ADVERTISED, and a child that names it anyway
+    /// is refused at dispatch. The bridged path has its own access check, so the
+    /// roster alone is not the control.
+    ///
+    /// ⚠ Nothing here touches `set_user_proof_available`. That is a
+    /// process-global, read by `Agent::platform_tool_gates` on every
+    /// `list_tools`, so flipping it would silently empty the tool roster of
+    /// every OTHER test running concurrently in this binary — a failure that
+    /// reads as "the tool is never advertised", which is the bug this test
+    /// exists to catch. `#[serial]` does not help: the readers are not in its
+    /// group. The flag is applied instead where it lands, on the plan, which is
+    /// also where `enforce_tool_access` reads it back.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_daemon_that_cannot_ask_a_person_bridges_no_bug_reporter() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let mut plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+
+        let offered = agent
+            .prepare_coding_agent_bridge_tools(
+                &[platform_tools::report_bug_tool()],
+                plan.delegation_available,
+                false,
+                &plan.targets,
+                &plan.extension_targets,
+            )
+            .await;
+        assert!(
+            offered.is_empty(),
+            "a tool whose approval can never be granted must not be advertised: {:?}",
+            offered
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+
+        plan.bug_report = false;
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+        let refusal = dispatch
+            .enforce_tool_access(
+                &session_id,
+                &CallToolRequestParams {
+                    name: PLATFORM_REPORT_BUG_TOOL_NAME.into(),
+                    arguments: Some(object!({"action": "analyze"})),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("a child must not dispatch a tool this plan never offered");
+        assert!(
+            refusal.contains("not in this turn's coding-agent bridge"),
+            "{refusal}"
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn coding_agent_bridge_child_inheritance_uses_live_plan_and_manager_grants() {
@@ -15730,7 +16167,7 @@ mod tests {
         running.abort();
     }
 
-    /// Issue #141: the four Agent-dispatched `platform__*` tools were reachable
+    /// Issue #141: the Agent-dispatched `platform__*` tools were reachable
     /// from NOWHERE once Code Execution was on.
     ///
     /// Code Execution mode collapses the model's directly-callable list to
@@ -19646,6 +20083,150 @@ mod gate_b_turn_tests {
             !eager_compaction_in_flight(&agent, &s.id),
             "a public provider was handed a private transcript to summarise in \
              the background"
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_scope_tests {
+    //! The chat turn's provider call runs with the session in scope.
+    //!
+    //! ⚠ This is a *diagnostics* invariant, not a correctness one, which is
+    //! exactly why nothing caught it breaking. `RequestLog::start` stamps
+    //! `session_context::current_session_id()` into the first line of every
+    //! `llm_request.*.jsonl`, and `diagnostics::log_belongs_to_session` fails
+    //! closed on a log whose header names no session. The scheduler
+    //! (`scheduler.rs`) and the sub-agent handler both scoped their turns; the
+    //! interactive path never did. So every log written by a desktop or CLI
+    //! chat was unattributable, every one of them was excluded from the
+    //! diagnostics bundle, and the bundle said nothing about it — measured on
+    //! the development machine as 49 files out of 49.
+    //!
+    //! A turn works perfectly either way. The only observer is the log header,
+    //! so the only test that can fail is one that reads it — from inside the
+    //! provider, where `RequestLog::start` reads it.
+
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    /// Reads the session task-local from exactly where `RequestLog::start`
+    /// reads it: inside the provider's own completion body.
+    struct SessionSpyProvider {
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl Provider for SessionSpyProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("spy", "Spy", "", "spy-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "spy"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(crate::session_context::current_session_id());
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("spy-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("spy-model")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_turn_runs_its_provider_call_with_the_session_in_scope() {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                PathBuf::from("."),
+                "session-scope".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        agent
+            .update_provider(
+                Arc::new(SessionSpyProvider {
+                    seen: Arc::clone(&seen),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        // The task-local is unset outside a turn, so a test that only asserted
+        // "the id is right" would pass against a scope that never opened if the
+        // ambient value happened to match. It cannot here: there is none.
+        assert_eq!(crate::session_context::current_session_id(), None);
+
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("hi"),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(1),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        drop(stream);
+
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            !seen.is_empty(),
+            "the provider was never called, so this test proves nothing"
+        );
+        assert!(
+            seen.iter()
+                .all(|id| id.as_deref() == Some(session.id.as_str())),
+            "every provider call in a chat turn must see its own session id, \
+             or its request log cannot be attributed and the diagnostics bundle \
+             silently drops it; saw {seen:?} for session {}",
+            session.id
         );
     }
 }

@@ -143,13 +143,17 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
           ? info.enabled_extensions.join(', ')
           : '[e.g. Computer Controller, Figma]';
 
+      // ⚠ Both links used to be dead: repo-relative documentation paths pasted
+      // after a `github.com/<org>/<repo>/` prefix, which resolves to nothing.
+      // They point at the published docs site, which is where the repository's
+      // own `.github/ISSUE_TEMPLATE/bug_report.md` sends people.
       const body = `**Describe the bug**
 
 💡 Before filing, check common issues:  
-https://github.com/BaranziniLab/biorouter/docs/troubleshooting
+http://biorouter.ucsf.edu/docs
 
 📦 To help us debug faster, attach your **diagnostics zip** if possible.  
-👉 How to capture it: https://github.com/BaranziniLab/biorouter/docs/troubleshooting/diagnostics-and-reporting/
+👉 Capture it from this dialog's **Generate diagnostics** button.
 
 A clear and concise description of what the bug is.
 
@@ -174,7 +178,7 @@ If applicable, add screenshots to help explain your problem.
 
 ---
 
-**Provide the following information**
+**Please provide the following information**
 - **OS & Arch:** ${info.os} ${info.os_version} ${info.architecture}
 - **Interface:** UI
 - **Version:** ${info.app_version}
@@ -250,6 +254,12 @@ Add any other context about the problem here.
             </p>
           )}
           <p>If you file a bug, consider attaching the diagnostics report to it.</p>
+          <p data-testid="diagnostics-agent-hint">
+            You can also just say{' '}
+            <strong className="text-text-default">&ldquo;report a bug&rdquo;</strong> in the chat.
+            Biorouter will work out what went wrong, write the report, remove paths and credentials
+            from it, and show you the exact text before anything is published.
+          </p>
         </div>
         {isDownloading && (
           <div

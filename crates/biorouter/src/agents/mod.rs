@@ -6,6 +6,10 @@ pub mod approval_relay;
 // configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
 // steps a reply takes, this bounds how long it runs and what it costs.
 pub mod budget;
+// The agent-callable bug reporter: gather the session's own evidence, distil a
+// report, and -- only behind a proof-backed approval showing the exact body --
+// file it on the public issue tracker.
+pub mod bug_report;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod code_execution_extension;
 // BR-48: a deterministic done-ness gate for interactive chat — reuses the
