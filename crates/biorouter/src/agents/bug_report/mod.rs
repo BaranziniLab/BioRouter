@@ -151,9 +151,15 @@ fn steps_arg(arguments: &Value) -> Vec<String> {
 }
 
 /// Is this session's content barred from a public destination?
-fn refuses_public_disclosure(session: &Session) -> bool {
-    crate::privacy::privacy_tiers_enabled()
-        && session.privacy_tier == SessionClassification::Private
+///
+/// ⚠ Pure, taking the master switch as an ARGUMENT rather than reading it. The
+/// switch is a process-global atomic, and a test that flipped it to exercise
+/// the second arm broke six unrelated privacy tests running concurrently in the
+/// same binary — a failure that reads as a privacy hole in code nobody touched.
+/// The same shape as `CallCapability`: sample once, thread the value, and the
+/// decision becomes testable without a global to fight over.
+fn refuses_public_disclosure(tier: SessionClassification, tiers_enabled: bool) -> bool {
+    tiers_enabled && tier == SessionClassification::Private
 }
 
 /// The conversation to read the failures out of.
@@ -501,7 +507,10 @@ async fn file_report(
 
     // Privacy: decided AFTER the report is written, deliberately. The work is
     // the expensive part and it is not wasted — the refusal hands it back.
-    if refuses_public_disclosure(session) {
+    if refuses_public_disclosure(
+        session.privacy_tier,
+        crate::privacy::privacy_tiers_enabled(),
+    ) {
         return text(private_session_refusal(&draft.title, &body, &repo));
     }
 
@@ -885,30 +894,53 @@ mod tests {
     /// refusal comes with the finished report, because the analysis is the
     /// expensive half and throwing it away would just push the user to paste
     /// the transcript somewhere worse.
-    /// Restores the process-global master switch on drop, so a panicking test
-    /// cannot leave every other one running under the wrong setting.
-    struct MasterSwitch(bool);
-
-    impl MasterSwitch {
-        fn set(on: bool) -> Self {
-            let previous = crate::privacy::privacy_tiers_enabled();
-            biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
-            Self(previous)
-        }
+    /// ⚠ The private-session rule, tested as the pure predicate it is.
+    ///
+    /// It used to be tested by flipping the process-global master switch, which
+    /// broke six unrelated privacy tests in the same binary — a race that reads
+    /// as a privacy hole in code nobody had touched. Nothing here mutates any
+    /// global, so nothing can.
+    #[test]
+    fn a_private_chat_is_barred_from_a_public_destination() {
+        assert!(refuses_public_disclosure(
+            SessionClassification::Private,
+            true
+        ));
+        assert!(!refuses_public_disclosure(
+            SessionClassification::Public,
+            true
+        ));
     }
 
-    impl Drop for MasterSwitch {
-        fn drop(&mut self) {
-            biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(self.0);
-        }
+    /// ⚠ The DR-15 master switch turns this gate off with all the others.
+    ///
+    /// A deliberate ruling, not an oversight: a switch some gates ignore is not
+    /// a switch, and AR-7 is explicit that the toggle stops the classification
+    /// ratchet along with the gates — so with it off, a session marked
+    /// `Private` was marked by machinery the user has disabled. The
+    /// classification is still named on the approval card either way, so the
+    /// fact stays in front of the person deciding.
+    #[test]
+    fn the_master_switch_turns_this_gate_off_with_every_other_one() {
+        assert!(!refuses_public_disclosure(
+            SessionClassification::Private,
+            false
+        ));
     }
 
+    /// The refusal reaches the caller with the finished report attached, so the
+    /// analysis is not thrown away and the user is not pushed into pasting the
+    /// transcript somewhere worse.
+    ///
+    /// Reads the ambient switch rather than setting it, and SKIPS if it is off.
+    /// A skip is honest; flipping it is the race above.
     #[tokio::test]
-    #[serial_test::serial(privacy_master_switch)]
-    async fn a_private_chat_is_refused_before_any_card_is_raised() {
+    async fn a_private_chat_gets_the_refusal_and_its_report_back() {
+        if !crate::privacy::privacy_tiers_enabled() {
+            return;
+        }
         let (_dir, manager, mut session) = session_with_failures(2).await;
         session.privacy_tier = SessionClassification::Private;
-        let _switch = MasterSwitch::set(true);
 
         // `without_human_surface` proves the refusal is not merely an
         // unanswerable card: a card raised here would answer `Cancelled`, whose
@@ -928,37 +960,6 @@ mod tests {
             "the finished report must come back with the refusal: {body}"
         );
         assert!(!body.contains("Nothing was filed:"), "{body}");
-    }
-
-    /// ⚠ The DR-15 master switch turns this gate off with all the others.
-    ///
-    /// That is a deliberate ruling, not an oversight: a switch some gates
-    /// ignore is not a switch, and AR-7 is explicit that the toggle stops the
-    /// classification ratchet along with the gates -- so with it off, a session
-    /// marked `Private` was marked by machinery the user has disabled. The
-    /// classification is still named on the approval card either way, so the
-    /// fact stays in front of the person deciding.
-    #[tokio::test]
-    #[serial_test::serial(privacy_master_switch)]
-    async fn the_master_switch_turns_this_gate_off_with_every_other_one() {
-        let (_dir, manager, mut session) = session_with_failures(2).await;
-        session.privacy_tier = SessionClassification::Private;
-        let _switch = MasterSwitch::set(false);
-
-        let result = crate::user_surface::without_human_surface(handle_report_bug(
-            file_args(),
-            &session,
-            manager,
-            None,
-        ))
-        .await;
-        let body = body_of(&result);
-        assert!(
-            !body.contains("classified PRIVATE"),
-            "the gate must not fire while the master switch is off: {body}"
-        );
-        // It reached the approval instead, and there was nobody to answer.
-        assert!(body.contains("Nothing was filed"), "{body}");
     }
 
     /// ⚠ The harness refuses rather than posting. This is the one failure in
