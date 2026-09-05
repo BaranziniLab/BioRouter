@@ -874,7 +874,12 @@ impl StoredPrimary {
 /// The shipped default when a scope has never expressed a primary choice.
 /// Kept here rather than importing Biorouter's Soul module because the MCP
 /// crate is below the application crate in the dependency graph.
-const DEFAULT_PRIMARY_KB_ID: &str = "soul";
+///
+/// `pub(crate)` because `server::kb_delete_base` refuses this id, and the
+/// refusal must name the SAME base this file resolves an unexpressed primary
+/// to. A second `"soul"` literal over there is how the model-facing refusal and
+/// the product default come to disagree after someone renames one of them.
+pub(crate) const DEFAULT_PRIMARY_KB_ID: &str = "soul";
 
 /// "No primary at this scope" is always an explicit blank-file choice. At
 /// machine scope an absent file now means "use the product default Soul", so

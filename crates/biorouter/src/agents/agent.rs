@@ -4475,6 +4475,17 @@ impl Agent {
             crate::security::session_store::SessionStoreInspector,
         ));
 
+        // Show the user what a `kb_delete_base` would destroy, before it does.
+        // Inert for every other tool. Active in every mode that runs tools, not
+        // just Auto: an `AlwaysAllow` granted for one scratch base would
+        // otherwise cover every base the user will ever own, and a knowledge
+        // base — unlike an extension — cannot be reinstalled. Registered here
+        // for readability only; the merge is escalation-only, so its verdict
+        // wins from either position.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::knowledge_delete::KnowledgeDeleteInspector,
+        ));
+
         // BR-71 §5: cross-session capability changes always confirm, in every
         // mode. Inert for every tool but `workspace_set_tools` and
         // `workspace_open`.
@@ -6690,8 +6701,7 @@ impl Agent {
         } else {
             None
         };
-        let dispatch =
-            self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
+        let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
         self.create_coding_agent_bridge_lease(
             session,
             dispatch,
@@ -15675,9 +15685,27 @@ mod tests {
             names.contains(&"code_execution__execute_code"),
             "precondition: Code Execution mode must be active, else this proves nothing: {names:?}"
         );
+        // ⚠ `kb_delete_base` is the one deliberate exception, and it is excluded
+        // BY NAME rather than by loosening this to "some knowledge tool is
+        // gone". It stays on the roster because the sandbox may not run it: the
+        // approval it is contracted to show cannot be raised from a script, so
+        // the catalogue strips it and this surface keeps it — the pair is
+        // `security::knowledge_delete::is_knowledge_delete_tool`, asked in both
+        // places. Widening the precondition instead would let a future change
+        // narrow away every knowledge tool and still pass.
+        let narrowed_away: Vec<_> = names
+            .iter()
+            .filter(|name| name.starts_with("knowledge__"))
+            .filter(|name| !crate::security::knowledge_delete::is_knowledge_delete_tool(name))
+            .collect();
         assert!(
-            !names.iter().any(|name| name.starts_with("knowledge__")),
-            "precondition: Code Execution narrowing must be in force: {names:?}"
+            narrowed_away.is_empty(),
+            "precondition: Code Execution narrowing must be in force: {narrowed_away:?}"
+        );
+        assert!(
+            names.contains(&"knowledge__kb_delete_base"),
+            "kb_delete_base is refused inside the sandbox, so Code Execution mode must leave \
+             it directly callable or it reaches nowhere: {names:?}"
         );
 
         for expected in [

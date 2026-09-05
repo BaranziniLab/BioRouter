@@ -2391,6 +2391,53 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
     })
 }
 
+/// Every gate that has to fire at this door, which dispatches a tool call
+/// straight to the extension manager — bypassing the agent loop and therefore
+/// every [`ToolInspector`](biorouter::tool_inspection::ToolInspector).
+///
+/// The three share one shape: an inspector would have refused or asked, nothing
+/// in an HTTP handler can put an operation to the user and wait, so the call is
+/// refused here rather than performed unasked. Each returns a tool ERROR rather
+/// than a status code, because the caller is a tool caller and the remedy is in
+/// the text.
+///
+/// * **Machine-wide memory** (issue #63 review, finding 3) — the consent gate
+///   this route walked around entirely.
+/// * **The transcript store** (issue #56) — `SessionStoreInspector` also runs
+///   only in the agent loop, so this route reached
+///   `~/.config/biorouter/sessions/sessions.db`, every conversation on the
+///   machine including private ones, through any tool that takes a path.
+/// * **Deleting a knowledge base** — `kb_delete_base` is contracted to show the
+///   user an approval naming the base and everything that goes with it. Its
+///   refusal names `DELETE /knowledge/bases/{id}`, the route the Knowledge
+///   view's own delete button calls, so a person who means to delete a base
+///   still has a door.
+///
+/// Extracted from [`call_tool`] rather than inlined: the third gate pushed that
+/// handler past the `clippy::too_many_lines` baseline, and a list of boundary
+/// gates is exactly the thing that should be readable in one place — a fourth
+/// door added to two of the three is the failure mode
+/// [`biorouter::security::UninspectedBoundary`] exists to prevent.
+fn call_tool_boundary_refusal(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
+    const BOUNDARY: biorouter::security::UninspectedBoundary =
+        biorouter::security::UninspectedBoundary::AgentCallToolRoute;
+
+    biorouter::security::global_memory::uninspected_boundary_refusal(tool_name, arguments, BOUNDARY)
+        .or_else(|| {
+            biorouter::security::session_store::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
+        .or_else(|| {
+            biorouter::security::knowledge_delete::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
+}
+
 #[utoipa::path(
     post,
     path = "/agent/call_tool",
@@ -2412,37 +2459,11 @@ async fn call_tool(
         _ => None,
     };
 
-    // Issue #63 review, finding 3. This route hands a tool call straight to the
-    // extension manager, bypassing the agent loop and therefore every
-    // `ToolInspector` — including the machine-wide memory consent gate. Nothing
-    // in an HTTP handler can put an operation to the user and wait, so a global
-    // memory operation is refused here rather than performed unasked. It is
-    // returned as a tool error, not a status code, because the caller is a tool
-    // caller and the remedy is in the text.
-    //
-    // Ahead of resolving the agent on purpose: whether this call is allowed does
-    // not depend on any session state, and a decision that cannot be reached
-    // without one is a decision that can be skipped by arriving without one.
-    //
-    // Issue #56 adds the second door of the same shape: the transcript store.
-    // `SessionStoreInspector` also runs only in the agent loop, so this route
-    // reached `~/.config/biorouter/sessions/sessions.db` — every conversation on
-    // the machine, private ones included — through any tool that takes a path,
-    // with no inspector anywhere. Both are decided here, ahead of the agent, and
-    // both are returned as tool errors for the same reason.
-    let boundary_refusal = biorouter::security::global_memory::uninspected_boundary_refusal(
-        &payload.name,
-        arguments.as_ref(),
-        biorouter::security::UninspectedBoundary::AgentCallToolRoute,
-    )
-    .or_else(|| {
-        biorouter::security::session_store::uninspected_boundary_refusal(
-            &payload.name,
-            arguments.as_ref(),
-            biorouter::security::UninspectedBoundary::AgentCallToolRoute,
-        )
-    });
-    if let Some(refusal) = boundary_refusal {
+    // Decided ahead of resolving the agent on purpose: whether this call is
+    // allowed does not depend on any session state, and a decision that cannot
+    // be reached without one is a decision that can be skipped by arriving
+    // without one.
+    if let Some(refusal) = call_tool_boundary_refusal(&payload.name, arguments.as_ref()) {
         return Ok(Json(CallToolResponse {
             content: vec![Content::text(refusal)],
             structured_content: None,

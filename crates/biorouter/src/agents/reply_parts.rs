@@ -286,6 +286,17 @@ pub(crate) fn survives_code_execution_filter(
         // shape to test, because a frontend tool is named by whichever client
         // registered it.
         || frontend_tool_names.contains(tool_name)
+        // `kb_delete_base`: a fifth family, and the first one that is absent
+        // from the catalogue because the sandbox may not RUN it rather than
+        // because the sandbox cannot reach it. Deleting a knowledge base is
+        // shown to the user for approval first, and a script call is dispatched
+        // with no inspector chain to raise that approval — so the catalogue
+        // strips it (`ExtensionManager::get_prefixed_tools_excluding`) and this
+        // keeps it directly callable. The same predicate answers both, so the
+        // pair cannot drift into "dropped from the catalogue, dropped from the
+        // roster" — which is the state that reaches nowhere, and the state this
+        // tool shipped in for exactly one live run.
+        || crate::security::knowledge_delete::is_knowledge_delete_tool(tool_name)
 }
 
 fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
@@ -1359,6 +1370,13 @@ mod tests {
             crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
             FINAL_OUTPUT_TOOL_NAME,
             "frontend__pick_a_file",
+            // The fifth family, and the one whose absence from the catalogue is
+            // a POLICY rather than a plumbing fact: the sandbox could dispatch
+            // `kb_delete_base` perfectly well, and must not, because the
+            // approval it is contracted to show cannot be raised from there.
+            // Listed here so removing the catalogue strip cannot quietly retire
+            // the obligation below along with it.
+            "knowledge__kb_delete_base",
         ] {
             assert!(
                 uncatalogued.iter().any(|name| name == expected),

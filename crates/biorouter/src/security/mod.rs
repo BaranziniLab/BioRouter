@@ -1,4 +1,5 @@
 pub mod global_memory;
+pub mod knowledge_delete;
 pub mod patterns;
 pub mod policy;
 pub mod security_inspector;

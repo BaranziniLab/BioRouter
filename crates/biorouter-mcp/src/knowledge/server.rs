@@ -103,6 +103,18 @@ const KB_ID_GATED_TOOLS: &[&str] = &[
     "kb_search",
     "kb_search_raw_sources",
     "kb_export",
+    // Reads nothing back and writes nothing — it removes the base entirely —
+    // and is gated for the reason the writes are, one step further on.
+    // Destruction is at least as sensitive as a read: a public caller that
+    // could not read a private base must not be able to end it either, and the
+    // refusal has to say what it refused rather than reporting a base that is
+    // not there.
+    //
+    // Being on this list is also what stops the delete resolving an omitted
+    // `kb_id`: `KB_PRIMARY_RESOLVING_TOOLS` deliberately does NOT name it, so
+    // `gated_kb_id` returns `None` for an absent id and the tool's own required
+    // argument produces the error. See `DeleteBaseParams`.
+    "kb_delete_base",
     "kb_write_page",
     "kb_add_raw_source",
     "kb_append_log",
@@ -506,6 +518,35 @@ pub struct SetActiveParams {
     pub kb_id: String,
 }
 
+/// ⚠ `kb_id` is **required**, and is deliberately not an `Option` that falls
+/// back to the session's primary.
+///
+/// Every other base-addressing tool that takes an optional id reads; the ones
+/// that write all require it, "so a write is never ambiguous" (the rule stated
+/// in `instructions.md` and in the multi-KB plan). Deletion is the extreme of
+/// that rule: an omitted id would mean "destroy whichever base this session
+/// happens to point at", resolved from on-disk pointer state that the Knowledge
+/// view or another session may have moved since the model last looked. There is
+/// no reading of an absent argument here that is safe to guess.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteBaseParams {
+    pub kb_id: String,
+}
+
+/// What [`KnowledgeServer::kb_delete_base`] reports back — captured BEFORE the
+/// delete, because afterwards there is nothing left to read it off.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DeletedBase {
+    pub kb_id: String,
+    pub name: String,
+    /// Curated knowledge pages the base held. The number the approval card
+    /// showed the user, so the model's summary and the card cannot disagree.
+    pub pages_removed: usize,
+    /// Always `true` — the tool errors rather than reporting a partial delete;
+    /// `delete_base_under_locks` rolls its metadata back if any step fails.
+    pub deleted: bool,
+}
+
 // ── Task 5: Optional-kb_id variants of read-only params ─────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -753,7 +794,17 @@ impl KnowledgeServer {
             tool,
             "kb_write_page" | "kb_add_raw_source" | "kb_append_log"
         );
-        if !supports_handle && !matches!(tool, "kb_restore_state" | "kb_merge") {
+        // `kb_delete_base` joins the no-handle arm (#157). An open transaction
+        // holds the base's write lock — the in-process mutex and the on-disk
+        // `flock` — for its whole lifetime, so a delete underneath one does not
+        // race, it PARKS: `delete_base_async` queues on `lock_existing_kb` for
+        // the full 1800s deadline while the caller and every other session wait
+        // on a base that is already half-decided. Refusing is also the honest
+        // answer — there is uncommitted work on that base, and the owner should
+        // commit or abort it before its base is destroyed. There is no `txn`
+        // argument to offer, because a transaction cannot outlive the thing it
+        // is a transaction on.
+        if !supports_handle && !matches!(tool, "kb_restore_state" | "kb_merge" | "kb_delete_base") {
             return Ok(());
         }
         let slot = self.transactions.slot(kb_id);
@@ -1131,6 +1182,100 @@ impl KnowledgeServer {
             )
             .map_err(into_err)?;
         ok_json(&m)
+    }
+
+    #[tool(
+        name = "kb_delete_base",
+        description = "Permanently delete a knowledge base: its pages, its raw sources and its \
+                       whole git history, plus its registry entry and any selection pointing at \
+                       it. There is no undo and no trash — `kb_restore_state` restores a commit \
+                       WITHIN a base and cannot bring a deleted base back. Export it first with \
+                       `kb_export` if the content might be wanted again.\n\
+                       \n\
+                       Use this to clean up a base you created that is no longer wanted. If the \
+                       user only wants it out of the way, `kb_set_active` moves the primary and \
+                       hiding a base removes it from this session without destroying it — prefer \
+                       either of those unless the user asked for deletion.\n\
+                       \n\
+                       `kb_id` is required and is never inferred from the session's primary. The \
+                       built-in `soul` base cannot be deleted this way.",
+        annotations(
+            title = "Delete a knowledge base",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    pub async fn kb_delete_base(
+        &self,
+        p: Parameters<DeleteBaseParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kb_id = p.0.kb_id;
+
+        // ⚠ Refused HERE, on the model's surface, and deliberately NOT in
+        // `KnowledgeService::delete_base`. Two reasons, and they point the same
+        // way:
+        //
+        // 1. A factory reset (`routes::reset::reset_knowledge`) deletes every
+        //    base and recreates Soul. A service-level refusal would break it,
+        //    and working around that would mean a second delete path — which is
+        //    how a guard ends up applying to the caller who least needs it.
+        // 2. The governing asymmetry: a user who insists proceeds past a
+        //    warning; an agent never does the same thing automatically. The
+        //    Knowledge view's own delete already shows a human "cannot be
+        //    undone" confirmation for whichever base they picked. What has no
+        //    business happening unattended is a model deciding to destroy the
+        //    base that holds what Biorouter knows about this user.
+        //
+        // Soul is re-seeded empty at the next start (`soul::ensure_soul`), so
+        // deleting it is not even durable — it is just a silent erasure of the
+        // user's accumulated context wearing the clothes of a cleanup.
+        if kb_id == crate::knowledge::service::DEFAULT_PRIMARY_KB_ID {
+            return Err(ErrorData::invalid_request(
+                format!(
+                    "'{}' is Biorouter's built-in knowledge base and cannot be deleted. It is \
+                     re-created empty on the next start, so deleting it would erase what \
+                     Biorouter has learned about this user without removing anything. To stop \
+                     using it in this conversation, point the primary elsewhere with \
+                     kb_set_active, or ask the user to hide it in the Knowledge view.",
+                    crate::knowledge::service::DEFAULT_PRIMARY_KB_ID
+                ),
+                None,
+            ));
+        }
+
+        // Read what the base WAS before it stops existing. `pages_removed` is
+        // the same count the approval card showed, so the summary the model
+        // reports and the sentence the user approved cannot drift apart.
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
+        let name = crate::knowledge::manifest::load(&kb_root)
+            .map(|m| m.name)
+            .unwrap_or_else(|_| kb_id.clone());
+        let pages_removed = crate::knowledge::store::list_pages(&kb_root, None)
+            .map(|pages| pages.len())
+            .unwrap_or(0);
+
+        // The service owns the transaction: staged rename, registry unregister,
+        // machine primary, per-session primaries, both hidden sets and the tier
+        // record, with a rollback if any step fails. CP1 above has already
+        // refused a caller that may not reach this base and refused the call
+        // outright if a transaction is open on it.
+        //
+        // `context.ct` and not `None`: deletion takes the base's write lock,
+        // whose deadline is 1800s, so without the request's token Stop would do
+        // nothing for half an hour behind a busy base.
+        self.service
+            .delete_base_async(&kb_id, Some(&context.ct))
+            .await
+            .map_err(into_err)?;
+
+        ok_json(&DeletedBase {
+            kb_id,
+            name,
+            pages_removed,
+            deleted: true,
+        })
     }
 
     #[tool(
@@ -3503,12 +3648,12 @@ mod tests {
         }
     }
 
-    /// All twenty-one `kb_*` tools. The exclusion list as data, reviewable in
-    /// one
+    /// All twenty-two `default`-addressable `kb_*` tools. The exclusion list as
+    /// data, reviewable in one
     /// place:
     ///   ratchets "default":      kb_write_page, kb_add_raw_source, kb_append_log
     ///   ratchets its OWN new id: kb_create_base, kb_import
-    ///   does not ratchet:        the other sixteen
+    ///   does not ratchet:        the other seventeen
     const KB_TOOL_PROBES: &[ToolProbe] = &[
         ToolProbe {
             name: "kb_list_bases",
@@ -3686,11 +3831,28 @@ mod tests {
             ratchets: true,
             refused_naming_a_private_base: true,
         },
+        ToolProbe {
+            // Gated, and pointedly NOT ratcheting — which reads backwards until
+            // you ask what a ratchet is for. It records that a base has been
+            // exposed to a more sensitive session, so that LATER reads of it can
+            // be refused. A successful delete leaves no later reads: the tier
+            // record is one of the six things `delete_base_under_locks` removes
+            // (`tier::forget_unlocked`). Ratcheting first would write a
+            // classification for an id that is about to stop existing, and if
+            // the delete then failed and rolled back, a private caller's
+            // *attempt* would have permanently privatised a public base — the
+            // same one-way loss `kb_validate_page` and `kb_lint` are kept off
+            // this list to avoid, bought here for even less.
+            name: "kb_delete_base",
+            args: |kb| serde_json::json!({ "kb_id": kb }),
+            ratchets: false,
+            refused_naming_a_private_base: true,
+        },
     ];
 
     #[tokio::test]
     async fn every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not() {
-        // Parameterised over the nineteen `default`-addressing tools, driven
+        // Parameterised over the twenty `default`-addressing tools, driven
         // through `call_tool` BY NAME — which is the point of CP1: eight of them
         // take no `RequestContext`, so a test that calls the `#[tool]` fn
         // directly cannot express "as a private caller" for them at all. A test
@@ -3698,7 +3860,7 @@ mod tests {
         // kb_add_raw_source — the tool the GUI ingest panel and the `ingest`
         // macro actually call — so the whole ingest path would launder.
         //
-        // `kb_create_base` and `kb_import` are the other two of the twenty-one;
+        // `kb_create_base` and `kb_import` are the other two of the twenty-two;
         // they ratchet their OWN new id and have their own tests below.
         for probe in KB_TOOL_PROBES {
             let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
@@ -3997,6 +4159,410 @@ mod tests {
                  None for it and the raise never runs"
             );
         }
+    }
+
+    // ── kb_delete_base ───────────────────────────────────────────────────────
+
+    /// The whole transaction, from the model's seam.
+    ///
+    /// ⚠ The directory is the least of it. A base that is gone from disk but
+    /// still named in `registry.yaml` is worse than one that is still there:
+    /// every listing shows it, every read of it fails, and the user cannot
+    /// remove what does not exist. The selection files are the same shape one
+    /// layer up — `docs`' own note is that the primary must remain visible and
+    /// the daemon repairs selection when a base is hidden or deleted, which it
+    /// cannot do for a pointer nothing ever cleared.
+    #[tokio::test]
+    async fn deleting_a_base_removes_its_directory_registry_row_and_every_pointer_at_it() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["scratch", "keeper"]);
+        seed_page(&root, "scratch", "knowledge/a.md", "SCRATCH-BODY");
+        seed_page(&root, "scratch", "knowledge/b.md", "MORE-SCRATCH");
+
+        // Every pointer shape the delete has to clear: the machine-wide
+        // primary, a per-session primary, the machine-wide hidden set and a
+        // per-session hidden set.
+        let svc = KnowledgeService::new(root.clone());
+        svc.set_primary_persisted(Some("scratch")).unwrap();
+        svc.set_primary_for_session("sess-1", Some("scratch"))
+            .unwrap();
+        svc.set_hidden_persisted(&["scratch".to_string(), "keeper".to_string()])
+            .unwrap();
+        svc.set_hidden_for_session("sess-2", &["scratch".to_string()])
+            .unwrap();
+
+        let out = call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "scratch" }),
+            Private,
+        )
+        .await;
+        let summary = json_of(&out);
+        assert_eq!(summary["kb_id"], "scratch");
+        assert_eq!(summary["deleted"], true);
+        assert_eq!(
+            summary["pages_removed"], 2,
+            "the summary must report what was actually lost: {summary}"
+        );
+
+        // 1. The directory, `.git` and all.
+        assert!(
+            !root.join("scratch").exists(),
+            "the base directory survived the delete"
+        );
+        // …and no staging residue: a `.deleting-<id>-<uuid>` left behind is a
+        // full copy of the base the user believes is gone.
+        let leftovers: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with(".deleting-"))
+            .collect();
+        assert!(leftovers.is_empty(), "staged delete residue: {leftovers:?}");
+
+        // 2. The registry row.
+        let registry = crate::knowledge::registry::load(&root).unwrap();
+        assert!(
+            !registry.iter().any(|entry| entry.id == "scratch"),
+            "the registry still names a base that no longer exists"
+        );
+        assert!(
+            registry.iter().any(|entry| entry.id == "keeper"),
+            "the delete took an unrelated base's registry row with it"
+        );
+
+        // 3. Every selection pointing at it — and nothing pointing at anything
+        //    else.
+        let svc = KnowledgeService::new(root.clone());
+        assert_eq!(
+            svc.primary_for_session(None).unwrap().as_deref(),
+            None,
+            "the machine-wide primary still points at a deleted base"
+        );
+        assert_eq!(
+            stored_primary(&root, "sess-1"),
+            None,
+            "a session's primary still points at a deleted base"
+        );
+        assert_eq!(
+            svc.get_hidden_persisted().unwrap(),
+            vec!["keeper".to_string()],
+            "the machine-wide hidden set kept a deleted id (and must keep the others)"
+        );
+        assert_eq!(
+            svc.get_hidden_for_session("sess-2").unwrap(),
+            Vec::<String>::new(),
+            "a session's hidden set kept a deleted id"
+        );
+        assert!(
+            !crate::knowledge::tier::has_metadata_unlocked(&root, "scratch").unwrap(),
+            "the classification record outlived the base it classified"
+        );
+
+        // 4. The id is genuinely free again — the strongest single statement
+        //    that nothing was left behind, since `create_base` refuses an id
+        //    whose directory or registry row still exists.
+        srv.service
+            .create_base("scratch", "Scratch", None)
+            .expect("the deleted id must be reusable");
+    }
+
+    /// The other half of "delete a base you created": the model must be able to
+    /// see, straight afterwards, that it is gone.
+    #[tokio::test]
+    async fn a_deleted_base_stops_being_listed() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["scratch", "keeper"]);
+        let before =
+            json_of(&call_tool_as(&srv, "kb_list_bases", serde_json::json!({}), Private).await);
+        assert_eq!(before.as_array().unwrap().len(), 2);
+
+        call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "scratch" }),
+            Private,
+        )
+        .await
+        .expect("the delete must succeed");
+
+        let after =
+            json_of(&call_tool_as(&srv, "kb_list_bases", serde_json::json!({}), Private).await);
+        let ids: Vec<&str> = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|base| base["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["keeper"],
+            "the listing still names the deleted base"
+        );
+    }
+
+    /// Issue #56. Destruction is at least as sensitive as a read, and the
+    /// refusal has to say what it refused.
+    ///
+    /// ⚠ The second half is the one that matters. A gate that answered "kb
+    /// 'omop' not found" would look like a refusal and be a *worse* outcome
+    /// than none: the model would conclude the base is already gone and report
+    /// the cleanup as done. This tool is not `kb_set_active`, whose non-member
+    /// answer is deliberately indistinguishable from a missing id — that
+    /// exemption exists because moving a pointer to a base you cannot see is a
+    /// no-op, whereas here the caller has just been stopped from destroying
+    /// something and needs to know that is what happened.
+    #[tokio::test]
+    async fn a_public_caller_cannot_delete_a_private_base_and_is_told_so() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-BODY");
+        let before = kb_fingerprint(&root, "omop");
+
+        let out = call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "omop" }),
+            Public,
+        )
+        .await;
+        assert!(
+            is_privacy_refusal(&out),
+            "a public caller deleted, or was refused for the wrong reason: {}",
+            rendered(&out)
+        );
+        assert!(
+            root.join("omop").exists(),
+            "the base was deleted despite the refusal"
+        );
+        assert_eq!(
+            kb_fingerprint(&root, "omop"),
+            before,
+            "the refused delete still touched the base"
+        );
+        assert!(
+            crate::knowledge::registry::load(&root)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.id == "omop"),
+            "the refused delete unregistered the base"
+        );
+
+        // …and the barrier is the only thing standing in the way: a private
+        // caller deletes the same base, or "cannot delete" is satisfied by
+        // "delete never works".
+        call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "omop" }),
+            Private,
+        )
+        .await
+        .expect("a private caller must be able to delete its own private base");
+        assert!(!root.join("omop").exists());
+    }
+
+    /// #157. An open transaction holds the base's write lock for its whole
+    /// lifetime, so a delete underneath one does not race — it parks on `flock`
+    /// for the full write deadline, taking the caller and every other session
+    /// with it. Refusing is also the honest answer: there is uncommitted work
+    /// on that base.
+    #[tokio::test]
+    async fn a_base_with_an_open_transaction_refuses_to_be_deleted() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["busy"]);
+        let txn = call_tool_json_as_session(
+            &srv,
+            "kb_begin_txn",
+            serde_json::json!({ "kb_id": "busy", "label": "in-flight" }),
+            "sess-1",
+            Private,
+        )
+        .await;
+        let handle = txn["txn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("kb_begin_txn must report its handle: {txn}"))
+            .to_string();
+
+        let out = call_tool_as_session(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "busy" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await;
+        assert!(
+            matches!(&out, Err(e) if e.message.contains(TRANSACTION_UNAVAILABLE)),
+            "an open transaction did not stop the delete: {}",
+            rendered(&out)
+        );
+        assert!(root.join("busy").exists(), "the base was deleted anyway");
+
+        // ⚠ And the refusal is not permanent: once the transaction is closed
+        // the base deletes normally. A gate that wedged the base would have
+        // reproduced #157 rather than avoided it.
+        call_tool_as_session(
+            &srv,
+            "kb_abort_txn",
+            serde_json::json!({ "kb_id": "busy", "txn": handle }),
+            Some("sess-1"),
+            Private,
+        )
+        .await
+        .expect("the transaction must abort");
+        call_tool_as_session(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "busy" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await
+        .expect("the base must delete once nothing holds it");
+        assert!(!root.join("busy").exists());
+    }
+
+    /// Soul is refused to the MODEL, and the refusal names what to do instead.
+    ///
+    /// ⚠ It is refused here and NOT in `KnowledgeService::delete_base`, which
+    /// `routes::reset::reset_knowledge` calls over every base including this
+    /// one. Pushing the guard down a layer would break the factory reset — and
+    /// the user's own delete in the Knowledge view is deliberately left alone:
+    /// a person who insists proceeds past a warning, an agent never does the
+    /// same thing automatically.
+    #[tokio::test]
+    async fn the_built_in_soul_base_is_refused_to_the_model_but_not_to_the_service() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["soul", "scratch"]);
+
+        let out = call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "soul" }),
+            Private,
+        )
+        .await;
+        let message = rendered(&out);
+        assert!(out.is_err(), "soul was deleted by the model: {message}");
+        assert!(
+            message.contains("kb_set_active") || message.contains("hide"),
+            "the refusal must name what to do instead: {message}"
+        );
+        assert!(root.join("soul").exists());
+
+        // The same id, one layer down, still deletes — this is the path the
+        // factory reset takes.
+        srv.service
+            .delete_base("soul")
+            .expect("the service must still be able to delete soul (factory reset)");
+        assert!(!root.join("soul").exists());
+
+        // …and the refusal is about that one id, not about deletion.
+        call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "scratch" }),
+            Private,
+        )
+        .await
+        .expect("an ordinary base must still delete");
+    }
+
+    /// The primary must remain coherent. A session whose primary is deleted
+    /// falls back — it does not keep a dangling pointer, and it does not lose
+    /// the ability to write.
+    #[tokio::test]
+    async fn deleting_a_sessions_primary_leaves_a_coherent_selection() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["scratch", "keeper"]);
+        set_primary(&root, "sess-1", "scratch");
+        assert_eq!(stored_primary(&root, "sess-1"), Some("scratch".to_string()));
+
+        call_tool_as_session(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "scratch" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await
+        .expect("the delete must succeed");
+
+        // The pointer is cleared rather than left naming a base that is gone.
+        assert_eq!(
+            stored_primary(&root, "sess-1"),
+            None,
+            "the session kept a primary pointing at a deleted base"
+        );
+
+        // And the session is still usable: `kb_get_active` answers, and nothing
+        // it reports names the deleted base.
+        let active = call_tool_json_as_session(
+            &srv,
+            "kb_get_active",
+            serde_json::json!({}),
+            "sess-1",
+            Private,
+        )
+        .await;
+        assert!(
+            !active.to_string().contains("scratch"),
+            "the selection view still names the deleted base: {active}"
+        );
+
+        // A KB-less write in that session must not land in the base that was
+        // deleted, and must not be answered with a dangling id.
+        let out = call_tool_as_session(
+            &srv,
+            "kb_append_log",
+            serde_json::json!({ "kind": "manual", "summary": "after the delete" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await;
+        assert!(
+            !rendered(&out).contains("scratch"),
+            "a KB-less write after the delete still resolved to the deleted base: {}",
+            rendered(&out)
+        );
+    }
+
+    /// Deleting is not a way to reach a base you may not name. The id is
+    /// validated before anything opens a path, exactly as every other gated
+    /// tool's is.
+    #[tokio::test]
+    async fn a_traversing_kb_id_is_rejected_before_anything_is_removed() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["keeper"]);
+        for bad in ["../keeper", "keeper/../keeper", "KEEPER"] {
+            let out = call_tool_as(
+                &srv,
+                "kb_delete_base",
+                serde_json::json!({ "kb_id": bad }),
+                Private,
+            )
+            .await;
+            assert!(out.is_err(), "{bad} was accepted as a kb id");
+        }
+        assert!(root.join("keeper").exists());
+    }
+
+    /// The tool description has to state the thing that makes this different
+    /// from every other `kb_*` tool: it cannot be undone, and `kb_restore_state`
+    /// is not the escape hatch a model would reasonably assume it is.
+    #[test]
+    fn the_delete_tool_warns_that_restore_cannot_bring_a_base_back() {
+        let tool = declared_tool("kb_delete_base");
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(description.contains("kb_restore_state"), "{description}");
+        assert!(description.contains("kb_export"), "{description}");
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .expect("kb_delete_base must be annotated, or it grades Unknown");
+        assert_eq!(
+            annotations.destructive_hint,
+            Some(true),
+            "the risk grader reads this; without it the tool grades Unknown \
+             rather than High"
+        );
+        assert_eq!(annotations.read_only_hint, Some(false));
     }
 
     // ── Stage 4: the format argument and the validator ──────────────────────
@@ -5004,14 +5570,15 @@ mod tests {
 
     #[tokio::test]
     async fn no_tool_that_names_a_base_reaches_a_private_one_under_a_public_model() {
-        // Parameterised over the nineteen base-addressing tools, BY NAME through
+        // Parameterised over the twenty base-addressing tools, BY NAME through
         // `call_tool` — the shape CP1 makes possible and a per-tool design could
         // not express for the eight that take no `RequestContext`. `kb_export` is
         // the one to watch: it writes the entire base to an attacker-named path
         // on disk in one call.
         //
         // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
-        // says "all NINETEEN"; `kb_create_base` and `kb_import` cannot be probed
+        // says "all NINETEEN" (there are twenty now, `kb_delete_base` having
+        // joined them); `kb_create_base` and `kb_import` cannot be probed
         // against an existing id at all (they MINT one, and naming "omop" makes
         // create fail with "already exists" for a reason that has nothing to do
         // with this barrier). They are covered by

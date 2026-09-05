@@ -1721,6 +1721,23 @@ impl ExtensionManager {
         tools.retain(|tool| {
             tool.name.as_ref() != crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
         });
+        // …and so does deleting a knowledge base, for the sibling reason:
+        // `kb_delete_base` is contracted to show the user an approval naming the
+        // base and its page count, and the sandbox dispatches straight to
+        // `dispatch_tool_call` with no inspector chain to raise one. Rather than
+        // let the model import a binding that is refused the moment it is
+        // called, the tool is not in the catalogue at all — and
+        // `reply_parts::survives_code_execution_filter` keeps it directly
+        // callable, which is the half that makes this a redirection instead of a
+        // removal.
+        //
+        // ⚠ Measured, not theorised: with the refusal in place and this strip
+        // missing, GPT-5.5 wrote `import { kb_delete_base } from "knowledge"`,
+        // was refused, and told the user deletion was impossible in this
+        // session. It was right.
+        tools.retain(|tool| {
+            !crate::security::knowledge_delete::is_knowledge_delete_tool(tool.name.as_ref())
+        });
         Ok(tools)
     }
 

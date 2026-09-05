@@ -527,7 +527,7 @@ pub fn get_security_finding_id_from_results(
 /// A `PermissionRequest` hook is a convenience: the user writes it once, in
 /// advance, so routine prompts stop interrupting them. That is a reasonable
 /// thing to delegate — but only for approvals the *permission mode* raised.
-/// These four inspectors escalate because something about this specific call is
+/// These inspectors escalate because something about this specific call is
 /// dangerous or discloses data the user has not seen, and each of them exists
 /// precisely because automated grants (Auto mode, `AlwaysAllow`, a SmartApprove
 /// read-only grade, an org policy) must not decide it. A hook is one more
@@ -545,6 +545,11 @@ pub const NON_DELEGABLE_APPROVAL_INSPECTORS: &[&str] = &[
     crate::security::sensitive_ops::SENSITIVE_OPS_INSPECTOR_NAME,
     // A trusted admin's policy; a project-local hook is not the admin.
     crate::permission::managed_inspector::MANAGED_INSPECTOR_NAME,
+    // Permanent destruction of a knowledge base — its pages, its raw sources
+    // and its whole git history. A hook that could answer this is a hook that
+    // can delete the user's curated knowledge without them seeing it, and
+    // unlike an extension a knowledge base cannot be reinstalled.
+    crate::security::knowledge_delete::KNOWLEDGE_DELETE_INSPECTOR_NAME,
 ];
 
 /// Whether this tool request's approval must be answered by the user in person.
