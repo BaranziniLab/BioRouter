@@ -33,7 +33,8 @@ use crate::agents::extension_manager::{
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
-    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
@@ -6516,6 +6517,19 @@ impl Agent {
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                // Deliberately NOT bridged, and the reason is the list it is
+                // absent from rather than a judgement about coding agents.
+                // `CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS` is not "platform
+                // tools the bridge permits" — it is gated on `trusted_knowledge`
+                // and keyed to the `knowledge` capability target, because both
+                // of its entries are knowledge ingestion and `ChatBridgeDispatch`
+                // carries an `ingest_provider` to run them. Workflow management
+                // is neither a knowledge tool nor routed by that dispatch, so
+                // bridging it would advertise a call the child cannot resolve —
+                // which is exactly what this list exists to prevent. It sits
+                // beside `manage_schedule`, its real sibling: both are
+                // agent-dispatched management tools over the user's own setup.
+                || name == crate::agents::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
             let target_enabled = targets.iter().any(|target| {
@@ -6801,6 +6815,27 @@ impl Agent {
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let result = self.handle_read_session_blob(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
+        // The user's saved workflows. Dispatched here rather than from an
+        // extension because `generate` runs `Agent::create_workflow`, which
+        // needs this agent's provider, prompt manager and extension manager —
+        // the same reason `platform__ingest_source` sits above.
+        if tool_call.name == PLATFORM_MANAGE_WORKFLOW_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self
+                .handle_manage_workflow(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -7490,6 +7525,13 @@ impl Agent {
                 .await,
             // BR-7: the retrieval half of externalized tool results.
             session_blobs: message_blobs::lazy_load_enabled(),
+            // Unconditional: workflow management has no capability to hang off,
+            // and the daemon-level question (can a person be asked to approve a
+            // write?) narrows the tool's own action list rather than hiding it —
+            // `list` and `read` are useful on a daemon that can never approve
+            // anything. The field exists so a future condition lands here beside
+            // the others instead of becoming a fifth `if` in `list_tools_for`.
+            workflows: true,
         }
     }
 
@@ -11935,10 +11977,10 @@ mod tests {
     }
 
     /// The gates each still decide their own tool, and the `extension_name`
-    /// scope still applies to all four. Catches an assembly that ORs the gates
+    /// scope still applies to every one. Catches an assembly that ORs the gates
     /// (a session with only Knowledge would gain the scheduler tool) and one
     /// that drops the scope filter (`list_tools(Some("developer"))` would grow
-    /// four tools that do not belong to Developer).
+    /// tools that do not belong to Developer).
     #[test]
     fn each_platform_tool_tracks_its_own_gate_and_the_listing_scope() {
         use platform_tools::PlatformToolGates;
@@ -11953,11 +11995,13 @@ mod tests {
             scheduler: true,
             knowledge: true,
             session_blobs: true,
+            workflows: true,
         };
         let none = PlatformToolGates {
             scheduler: false,
             knowledge: false,
             session_blobs: false,
+            workflows: false,
         };
 
         assert_eq!(
@@ -12000,6 +12044,16 @@ mod tests {
                 None
             ),
             vec![PLATFORM_READ_SESSION_BLOB_TOOL_NAME]
+        );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    workflows: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_MANAGE_WORKFLOW_TOOL_NAME]
         );
     }
 
