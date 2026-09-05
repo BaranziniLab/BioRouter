@@ -6690,8 +6690,7 @@ impl Agent {
         } else {
             None
         };
-        let dispatch =
-            self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
+        let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
         self.create_coding_agent_bridge_lease(
             session,
             dispatch,

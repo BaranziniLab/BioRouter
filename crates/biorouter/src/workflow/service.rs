@@ -83,10 +83,13 @@ pub fn short_id_from_path(path: &str) -> String {
 pub fn list_manifests() -> Result<Vec<WorkflowManifest>> {
     let mut manifests = Vec::new();
     for (file_path, workflow) in list_local_workflows()? {
-        let Ok(last_modified) = fs::metadata(&file_path).and_then(|m| m.modified()).map(|t| {
-            chrono::DateTime::<chrono::Utc>::from(t)
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-        }) else {
+        let Ok(last_modified) = fs::metadata(&file_path)
+            .and_then(|m| m.modified())
+            .map(|t| {
+                chrono::DateTime::<chrono::Utc>::from(t)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            })
+        else {
             continue;
         };
         manifests.push(WorkflowManifest {
@@ -354,6 +357,34 @@ pub struct SessionEnrichment {
     pub author: Option<crate::workflow::Author>,
 }
 
+/// Gather everything a live session contributes to a workflow generated from it.
+///
+/// ⚠ The ONE place these three facts are collected. Both the HTTP create route
+/// and the CLI's `/workflow` command call this and then
+/// [`apply_session_enrichment`]; before it existed only the route enriched, so
+/// the same conversation produced a different document depending on which
+/// surface asked. `create_from_session_produces_the_same_document_on_every_surface`
+/// is the assertion that keeps them together.
+pub async fn session_enrichment(
+    agent: &crate::agents::Agent,
+    knowledge: &biorouter_mcp::knowledge::service::KnowledgeService,
+    session_id: &str,
+    author: Option<crate::workflow::Author>,
+) -> Result<SessionEnrichment> {
+    let extensions = agent
+        .get_extension_configs()
+        .await
+        .into_iter()
+        .map(enrich_extension_description)
+        .collect();
+
+    Ok(SessionEnrichment {
+        extensions,
+        knowledge_bases: knowledge_bases_for_session(knowledge, session_id)?,
+        author,
+    })
+}
+
 /// Fold a session's facts into a freshly generated workflow.
 ///
 /// ⚠ The ONLY enrichment. A route, a CLI command or a tool that sets
@@ -596,7 +627,12 @@ mod tests {
         );
 
         assert_eq!(
-            workflow.knowledge_bases.as_ref().unwrap().default.as_deref(),
+            workflow
+                .knowledge_bases
+                .as_ref()
+                .unwrap()
+                .default
+                .as_deref(),
             Some("chosen"),
             "a selection the workflow already declares wins over the session's"
         );
@@ -701,5 +737,136 @@ mod tests {
             .expect_err("a path that no longer exists must not resolve");
         assert!(err.to_string().contains("not found"), "{err}");
         invalidate();
+    }
+}
+
+// The knowledge-capture tests moved down here with the function they cover.
+// They lived in `routes/workflow.rs` while the capture did; leaving them behind
+// would have left the server crate asserting behaviour it no longer owns.
+#[cfg(test)]
+mod knowledge_capture_tests {
+    use super::knowledge_bases_for_session;
+    use crate::workflow::Workflow;
+    use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+    fn service_with(ids: &[&str]) -> (tempfile::TempDir, KnowledgeService) {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        for id in ids {
+            svc.create_base(id, id, None).unwrap();
+        }
+        (dir, svc)
+    }
+
+    /// "Every base hidden" is a *stated* selection, not an absent one. Captured
+    /// as `None` it read as "the author had no opinion", so replay skipped the
+    /// selection write entirely and the new session inherited whatever the
+    /// replaying machine's defaults were — the opposite of what was authored.
+    #[test]
+    fn an_empty_visible_set_is_captured_not_dropped() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_visible_kbs(Some("s1"), &[], PrimaryUpdate::Unchanged)
+            .unwrap();
+
+        let captured = knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("a session that hid every base still has a selection to state");
+        assert!(
+            captured.visible.is_empty(),
+            "the authored set was empty; capture must say so"
+        );
+        assert_eq!(captured.default, None);
+
+        // Capturing it is only half the fix: both fields are
+        // `skip_serializing_if`, so the empty selection serializes to a bare
+        // `{}` and would be indistinguishable from an absent `knowledge_bases`
+        // if the OUTER field ever gained a "skip if empty" rule. Replay reads
+        // `Option::is_none` to decide whether to touch the session at all, so
+        // pin the round trip here — a saved workflow that loses the empty set
+        // on the way to disk defeats the capture silently.
+        let mut workflow = Workflow::builder()
+            .title("t")
+            .description("d")
+            .instructions("i")
+            .build()
+            .unwrap();
+        workflow.knowledge_bases = Some(captured);
+        let yaml = serde_yaml::to_string(&workflow).unwrap();
+        let round_tripped: Workflow = serde_yaml::from_str(&yaml).unwrap();
+        let replayed = round_tripped
+            .knowledge_bases
+            .expect("an explicitly empty set must survive being saved and reloaded");
+        assert!(replayed.visible.is_empty());
+        assert_eq!(replayed.default, None);
+    }
+
+    /// The one case with genuinely nothing to say: no bases exist at all, so
+    /// there is no set to describe and replay should leave the target session
+    /// alone.
+    #[test]
+    fn a_machine_with_no_bases_captures_nothing() {
+        let (_d, svc) = service_with(&[]);
+        assert!(knowledge_bases_for_session(&svc, "s1").unwrap().is_none());
+    }
+
+    /// A session that explicitly holds *no* primary must not be captured as
+    /// holding the machine-wide one. `get_primary_for_session` collapses
+    /// "never chose" and "chose nothing" into the same `None`, so the
+    /// hand-rolled `.or_else(get_primary_persisted)` fallback could not tell
+    /// them apart and handed the workflow a default the session had rejected —
+    /// which replay would then arm as the KB-less write target.
+    #[test]
+    fn an_explicit_no_primary_is_not_backfilled_from_the_machine() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+        svc.set_selection(Some("s1"), None, PrimaryUpdate::Clear)
+            .unwrap();
+
+        let captured = knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(
+            captured.default, None,
+            "the session said it has no primary; the machine's is not a substitute"
+        );
+        assert_eq!(
+            captured.visible,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "clearing the primary must not narrow the set"
+        );
+    }
+
+    /// A session that has simply never chosen still follows the machine
+    /// pointer — the fallback itself is correct, only its blindness was not.
+    #[test]
+    fn a_session_that_never_chose_still_inherits_the_machine_primary() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+
+        let captured = knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(captured.default.as_deref(), Some("alpha"));
+    }
+
+    /// The ordinary path still round-trips the set and its primary.
+    #[test]
+    fn a_narrowed_session_captures_its_set_and_primary() {
+        let (_d, svc) = service_with(&["alpha", "beta", "gamma"]);
+        svc.set_visible_kbs(
+            Some("s1"),
+            &["alpha".to_string(), "beta".to_string()],
+            PrimaryUpdate::Set("beta"),
+        )
+        .unwrap();
+
+        let captured = knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("a session with bases has a selection");
+        assert_eq!(
+            captured.visible,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        assert_eq!(captured.default.as_deref(), Some("beta"));
     }
 }

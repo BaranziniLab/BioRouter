@@ -3142,7 +3142,10 @@ record_result("ok");"#;
         // cannot corroborate and `mkdir -p` would be replayable over the victim.
         let history = command_history(
             "req_clone",
-            &format!("git clone https://example.com/scratch-build.git {}", victim.display()),
+            &format!(
+                "git clone https://example.com/scratch-build.git {}",
+                victim.display()
+            ),
             true,
         );
         let session = CallSession::new(scratch.path(), started_before_fixtures(), &history, &[]);
@@ -3260,7 +3263,10 @@ record_result("ok");"#;
         // disables provenance.
         let cloned = command_history(
             "req_clone",
-            &format!("git clone https://example.com/kdps-build.git {}", victim.display()),
+            &format!(
+                "git clone https://example.com/kdps-build.git {}",
+                victim.display()
+            ),
             true,
         );
         let clone_session = CallSession::new(scratch.path(), started, &cloned, &[]);

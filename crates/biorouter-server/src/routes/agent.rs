@@ -650,7 +650,7 @@ async fn start_agent(
             }
         }
     } else if let Some(id) = workflow_id {
-        match load_workflow_by_id(state.as_ref(), &id).await {
+        match load_workflow_by_id(&id) {
             Ok(workflow) => Some(workflow),
             Err(err) => return Err(err),
         }
