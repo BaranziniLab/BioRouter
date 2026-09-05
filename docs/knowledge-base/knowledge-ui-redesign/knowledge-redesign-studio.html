@@ -593,14 +593,14 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
           <th class="n">Pane</th><th>Viewport <code>md:</code> ≥ 930?</th>
         </tr></thead>
         <tbody>
-          <tr><td><b>App minimum, sidebar open</b></td><td class="n">1000 × 600</td><td class="n">240</td>
+          <tr><td><b>App minimum, sidebar open</b></td><td class="n">1048 × 600</td><td class="n">288</td>
               <td class="n good">760 × 568</td><td>fires — <b style="color:var(--danger)">two columns into 760 px</b></td></tr>
-          <tr><td>App minimum, sidebar collapsed</td><td class="n">1000 × 600</td><td class="n">54</td>
-              <td class="n">946 × 568</td><td>fires</td></tr>
-          <tr><td>Default window, sidebar open</td><td class="n">1000 × 1000</td><td class="n">240</td>
-              <td class="n">760 × 968</td><td>fires</td></tr>
-          <tr><td>1280 window, sidebar open</td><td class="n">1280 × 800</td><td class="n">240</td>
-              <td class="n">1040 × 768</td><td>fires</td></tr>
+          <tr><td>App minimum, sidebar collapsed</td><td class="n">1048 × 600</td><td class="n">54</td>
+              <td class="n">994 × 568</td><td>fires</td></tr>
+          <tr><td>Default window, sidebar open</td><td class="n">1440 × 1000</td><td class="n">288</td>
+              <td class="n">1152 × 968</td><td>fires</td></tr>
+          <tr><td>1280 window, sidebar open</td><td class="n">1280 × 800</td><td class="n">288</td>
+              <td class="n">992 × 768</td><td>fires</td></tr>
           <tr><td>1680 window, sidebar collapsed</td><td class="n">1680 × 1050</td><td class="n">54</td>
               <td class="n">1626 × 1018</td><td>fires</td></tr>
         </tbody>
@@ -608,11 +608,11 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
     </div>
 
     <div class="note" style="margin-bottom:22px">
-      <b>The bug this table exposes.</b> <code>minWidth: 1000</code> is derived in
-      <code>main.ts</code> as 240&nbsp;px of sidebar plus the 760&nbsp;px reading column — so at the
+      <b>The bug this table exposes.</b> <code>minWidth: 1048</code> is derived in
+      <code>main.ts</code> as the sidebar's 288&nbsp;px default plus the 760&nbsp;px reading column — so at the
       app's own minimum with the sidebar open, the Knowledge pane is <b>760&nbsp;px</b>. But the
       section's one breakpoint, <code>md:</code> at 930&nbsp;px, is a <b>viewport</b> media query. The
-      viewport is 1000&nbsp;px, so it fires and lays out two columns; the 300&nbsp;px Sources rail
+      viewport is 1048&nbsp;px, so it fires and lays out two columns; the 300&nbsp;px Sources rail
       then leaves <b>444&nbsp;px</b> for a graph pane whose filter strip needs about 681. The section
       is at its most broken at the smallest size the app will let you make.
       <b>Every step below is therefore a container query on the pane, not a media query on the window.</b>
@@ -1322,9 +1322,9 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
   /* ── §01 gallery ───────────────────────────────────────────────────────── */
   var SIZES = [
     { w:760,  h:568,  tag:'760 × 568', title:'App minimum, sidebar open',
-      sub:'window 1000 × 600', cap:'The floor. <b>One column with Sources/Graph tabs</b>, one <b>Filters</b> control beside a full-width search, and the header sheds its description line to the height step. Nothing overflows and nothing scrolls sideways.' },
-    { w:946,  h:568,  tag:'946 × 568', title:'App minimum, sidebar collapsed',
-      sub:'window 1000 × 600', cap:'Collapsing the sidebar buys the two-column step, and at 946 the rail has already taken its <b>300 px</b> width — which is exactly why the filter row is condensed here, with the three least-used facets folded into <b>More</b>.' },
+      sub:'window 1048 × 600, sidebar at its 288 px default', cap:'The floor. <b>One column with Sources/Graph tabs</b>, one <b>Filters</b> control beside a full-width search, and the header sheds its description line to the height step. Nothing overflows and nothing scrolls sideways.' },
+    { w:946,  h:568,  tag:'946 × 568', title:'Narrow window, sidebar collapsed',
+      sub:'pane 946 px', cap:'Collapsing the sidebar buys the two-column step, and at 946 the rail has already taken its <b>300 px</b> width — which is exactly why the filter row is condensed here, with the three least-used facets folded into <b>More</b>.' },
     { w:1040, h:768,  tag:'1040 × 768', title:'Narrower panel',
       sub:'window 1280 × 800, sidebar open', cap:'Two columns plus the legend as a <b>canvas-anchored card</b>, in the corner BioOKF puts it in. The filter row is still condensed here: the full row needs a measured <b>810 px</b> of centre column and this pane yields 738, so <b>Predicate</b>, <b>Source</b> and <b>Status</b> stay folded into <b>More</b>.' },
     { w:1626, h:700,  tag:'1626 × 700', title:'Wider panel',

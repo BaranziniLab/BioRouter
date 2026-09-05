@@ -705,10 +705,12 @@ value's *location* is as load-bearing as the number.
   216–360px with a 288px default, dragged from `SidebarResizeHandle` and stored
   per user in `localStorage` (clamped **on read**, so a value from an older build
   can never land outside today's bounds). Two consequences that are easy to get
-  wrong. ⚠ **The window's `minWidth` derives from the MINIMUM** (216 + 760 = 976,
-  `main.ts`): a floor taken from the default is one the user can push the window
-  under from the other side, by widening the sidebar until the reading column is
-  squeezed at a width the floor called roomy. ⚠ **The wide end is closed by an
+  wrong. ⚠ **The window's `minWidth` derives from the DEFAULT** (288 + 760 =
+  1048, `main.ts`). It was briefly taken from the *minimum* on the argument that
+  216 is the only width in the range that is a property of the app rather than of
+  a preference; that runs backwards, because `216 + 760 = 976` leaves the shipped
+  288px sidebar a `688px` column — under the measure the floor exists to protect.
+  ⚠ **The wide end is closed by an
   identity, not by a clamp** — `SIDEBAR_MAX_WIDTH + 760 = 1120 =
   SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield ladder — so raising the max without
   moving the ladder silently starts eating the measure. `styles/measures.test.ts`

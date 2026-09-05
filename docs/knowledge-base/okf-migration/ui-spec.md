@@ -23,11 +23,11 @@
 > codebase), §6.3 (the DOM swatch moves to `--radius-inner`) and §3.4/§3.5 (the responsive ladder).
 >
 > ⚠ **§3.4/§3.5 is a bug report, not a preference.** `md:` is a **viewport** media query, but the
-> thing that changes size is the **pane**. At the app's own minimum window (`minWidth: 976`, derived
-> in `main.ts` as the 216px sidebar *minimum* + the 760px column) with the sidebar open, the pane is
-> **760px** while the viewport is 976 — so the breakpoint fires and lays two columns into a space
+> thing that changes size is the **pane**. At the app's own minimum window (`minWidth: 1048`, derived
+> in `main.ts` as the 288px sidebar *default* + the 760px column) with the sidebar open, the pane is
+> **760px** while the viewport is 1048 — so the breakpoint fires and lays two columns into a space
 > that cannot hold them. (This read "1000 … 240px sidebar" until the sidebar became user-resizable
-> at 216–360px; the window floor moved with the minimum, the pane at that floor is still exactly 760,
+> at 216–360px; the window floor moved with the default, the pane at that floor is still exactly 760,
 > and the finding is unchanged.)
 
 The Knowledge section is the one place in BioRouter where the app draws a *data* surface — a canvas
