@@ -79,6 +79,45 @@ fn arg_str<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Every action the model may be offered, given whether a person is reachable.
+/// The one sentence on the import card that says what the link would INSTALL.
+///
+/// The card below it carries the whole decoded document, but a person reading a
+/// JSON blob under time pressure needs the dangerous part named first. An
+/// extension entry that carries a command is the one thing in a workflow that
+/// becomes a process on this machine, so it is called out by name rather than
+/// left to be spotted in the payload.
+fn import_declaration_summary(workflow: &crate::workflow::Workflow) -> String {
+    let Some(extensions) = workflow.extensions.as_ref().filter(|e| !e.is_empty()) else {
+        return String::new();
+    };
+    let names: Vec<String> = extensions
+        .iter()
+        .map(crate::agents::extension::ExtensionConfig::name)
+        .collect();
+    let executable = extensions
+        .iter()
+        .filter(|config| {
+            matches!(
+                config,
+                crate::agents::extension::ExtensionConfig::Stdio { .. }
+            )
+        })
+        .count();
+    let executable_note = if executable > 0 {
+        format!(
+            " ⚠ {executable} of them run a COMMAND on this machine — read the `cmd` and \
+             `args` below before approving."
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        " It declares {} extension(s): {}.{executable_note}",
+        extensions.len(),
+        names.join(", ")
+    )
+}
+
 pub fn available_actions(can_ask_a_person: bool) -> Vec<&'static str> {
     let mut actions: Vec<&'static str> = READ_ONLY_ACTIONS.to_vec();
     actions.push(GENERATE_ACTION);
@@ -409,14 +448,32 @@ impl Agent {
             )));
         }
 
+        // ⚠ The card is shown the DECODED document, not the call that produced
+        // it. `arguments` here is `{action: "import", deeplink: "<base64>"}`,
+        // and a preview of that is a wall of base64 — so the approval named
+        // only the title while the payload behind it could declare extensions,
+        // sub-workflows and, for a `Stdio` entry, an arbitrary command and
+        // arguments that this machine will later execute. A shared workflow
+        // link is untrusted input; asking a user to approve one by its title is
+        // asking them to approve a name.
+        //
+        // The whole workflow goes on the card because the whole workflow is
+        // what `service::save` is about to write — including any credential the
+        // sender left in it, which is the sender's disclosure to make and the
+        // recipient's to see before it lands on their disk.
+        let approval_arguments = serde_json::json!({
+            "action": "import",
+            "workflow": workflow,
+        });
         self.require_workflow_approval(
             "import",
             &session.id,
             &format!(
-                "Import the shared workflow '{}' into the workflow library",
-                workflow.title
+                "Import the shared workflow '{}' into the workflow library.{}",
+                workflow.title,
+                import_declaration_summary(&workflow)
             ),
-            arguments,
+            &approval_arguments,
             crate::permission::tool_risk::ToolRisk::Medium,
             cancellation_token,
         )
@@ -649,6 +706,113 @@ mod tests {
                 "`{action}` is offered but has no arm in `handle_manage_workflow`"
             );
         }
+    }
+
+    fn workflow_with(extensions: Vec<crate::agents::extension::ExtensionConfig>) -> Workflow {
+        let mut workflow = Workflow::builder()
+            .title("Shared Workflow")
+            .description("from a link")
+            .instructions("do the thing")
+            .build()
+            .expect("builds");
+        workflow.extensions = Some(extensions);
+        workflow
+    }
+
+    fn stdio(name: &str) -> crate::agents::extension::ExtensionConfig {
+        crate::agents::extension::ExtensionConfig::Stdio {
+            name: name.to_string(),
+            description: String::new(),
+            cmd: "/usr/local/bin/anything".to_string(),
+            args: vec![],
+            envs: Default::default(),
+            env_keys: vec![],
+            timeout: None,
+            bundled: None,
+            available_tools: vec![],
+        }
+    }
+
+    /// The sentence on the import card names what the link would install, and
+    /// calls out the entries that become a PROCESS on this machine.
+    #[test]
+    fn the_import_summary_names_the_extensions_and_flags_the_executable_ones() {
+        let summary = import_declaration_summary(&workflow_with(vec![stdio("scraper")]));
+        assert!(summary.contains("scraper"), "{summary}");
+        assert!(
+            summary.contains("run a COMMAND"),
+            "a `Stdio` entry is the one thing in a workflow that executes: {summary}"
+        );
+
+        let http = crate::agents::extension::ExtensionConfig::StreamableHttp {
+            name: "remote".to_string(),
+            description: String::new(),
+            uri: "https://example.org/mcp".to_string(),
+            envs: Default::default(),
+            env_keys: vec![],
+            headers: Default::default(),
+            timeout: None,
+            bundled: None,
+            available_tools: vec![],
+        };
+        let summary = import_declaration_summary(&workflow_with(vec![http]));
+        assert!(summary.contains("remote"), "{summary}");
+        assert!(
+            !summary.contains("run a COMMAND"),
+            "an HTTP connector spawns nothing; a warning on every card is one nobody \
+             reads: {summary}"
+        );
+
+        let mut bare = workflow_with(vec![]);
+        bare.extensions = None;
+        assert!(
+            import_declaration_summary(&bare).is_empty(),
+            "a workflow that declares nothing gets no sentence"
+        );
+    }
+
+    /// The import card is shown the DECODED workflow, never the call that
+    /// produced it.
+    ///
+    /// `arguments` for an import is `{action: "import", deeplink: "<base64>"}`,
+    /// so a preview of it is a wall of base64 and the approval named only the
+    /// title — while the payload behind it can declare extensions and, for a
+    /// `Stdio` entry, a command this machine will later execute. A shared
+    /// workflow link is untrusted input; approving one by its title is
+    /// approving a name.
+    ///
+    /// Read from the source because the handler hangs off `Agent`, and standing
+    /// a whole agent up to read one field of one approval would be a test of
+    /// the harness.
+    #[test]
+    fn the_import_approval_carries_the_decoded_workflow() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agents/workflow_tool.rs"),
+        )
+        .expect("the audit must not pass vacuously: this file must be readable");
+        let body = source
+            .split("async fn workflow_import")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .expect("workflow_import must be findable");
+        let code: String = body
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(before, _)| before))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            code.contains("\"workflow\": workflow"),
+            "the approval must carry the decoded document: {code}"
+        );
+        assert!(
+            code.contains("&approval_arguments"),
+            "the approval must be handed the decoded arguments, not the raw call: {code}"
+        );
+        assert!(
+            !code.contains("\n            arguments,\n"),
+            "passing the raw `arguments` puts the opaque deeplink on the card: {code}"
+        );
     }
 
     /// The mutating and read-only sets do not overlap, and together they are
