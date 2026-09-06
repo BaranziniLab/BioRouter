@@ -57,6 +57,19 @@ pub const LABEL: &str = "bug";
 /// a wedged `gh` does not hold a turn open.
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// How long the *readiness probe* may take, as distinct from filing.
+///
+/// ⚠ It sits on the critical path BEFORE the approval card: `file_report` asks
+/// `gh_ready()` so the prompt can name where the report will go. `gh auth
+/// status` makes a NETWORK round-trip, so at the filing timeout a user whose
+/// `gh` is slow or unauthenticated waits three quarters of a minute staring at
+/// nothing before the card appears — which is the "chat that silently stops"
+/// shape this feature has already been bitten by once.
+///
+/// A readiness check that takes longer than this is not readiness. Failing it
+/// costs only the compose-URL path, which works everywhere.
+const GH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// The destination, resolved once.
 pub fn repo() -> String {
     std::env::var(REPO_ENV)
@@ -237,8 +250,18 @@ impl Filer {
 /// from a tool call it would hang a turn until the TTL killed it, with the user
 /// seeing nothing at all.
 pub async fn gh_ready() -> bool {
+    // ⚠ The same guard `file_with_gh` uses, for the same reason and one more.
+    // A test binary must not shell out to `gh` at all: the probe is a network
+    // round-trip, so without this the tests' behaviour depends on whether the
+    // machine running them happens to have `gh` authenticated. That is why four
+    // card tests passed on a developer's Mac and failed on windows-latest — the
+    // runner's `gh` is installed but signed out, so the probe outlived the
+    // tests' budget and the card was never reached.
+    if running_under_test() {
+        return false;
+    }
     let Ok(result) = tokio::time::timeout(
-        GH_TIMEOUT,
+        GH_PROBE_TIMEOUT,
         tokio::process::Command::new("gh")
             .args(["auth", "status", "--hostname", "github.com"])
             .env("GH_PROMPT_DISABLED", "1")
