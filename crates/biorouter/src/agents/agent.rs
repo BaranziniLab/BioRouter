@@ -7037,6 +7037,28 @@ impl Agent {
         // is advertised only where a person can be asked (see
         // `PlatformToolGates::bug_report`).
         if tool_call.name == PLATFORM_REPORT_BUG_TOOL_NAME {
+            // ⚠ The gate is re-asked HERE, and not because the roster is
+            // untrusted. `PlatformToolGates::bug_report` withholds this tool
+            // where no person can be asked for proof-backed approval, but a
+            // roster is advice: a model that names a tool it was not offered
+            // reaches this branch anyway, and so does one replaying a call from
+            // a turn taken while the answer was different. On a `biorouter
+            // serve` daemon — spawned with `Stdio::null()`, so no proof-of-user
+            // key is ever installed — the file half then parks on an approval
+            // that can NEVER be granted, holding the turn for the full
+            // `APPROVAL_TTL`. Refusing in a sentence beats a quarter of an hour
+            // of silence, and it is the same answer the roster already gives.
+            if !crate::pending_user_action::user_proof_available() {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        "Filing a bug report needs a person to approve the exact text before                          it is published, and this Biorouter cannot ask one — it is running                          without a way to prove a human acted (a `biorouter serve` daemon,                          for instance). Nothing was filed and nothing was analysed. Tell the                          user to report it from the desktop app, or at                          https://github.com/BaranziniLab/biorouter/issues/new."
+                            .to_string(),
+                        None,
+                    )),
+                );
+            }
             let arguments = tool_call
                 .arguments
                 .map(Value::Object)
