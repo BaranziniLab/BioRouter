@@ -1749,7 +1749,7 @@ describe('ChatStreamRegistry', () => {
     ).toBe('lease-upgrade');
   });
 
-  it('keeps the stopped turn generation gated after a stale cancel is refused', async () => {
+  it('retries the stopped generation after an untyped cancel failure (#166)', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();
     const firstCancellation = deferred<{ data: { cancelled: boolean; settled: boolean } }>();
@@ -1768,7 +1768,10 @@ describe('ChatStreamRegistry', () => {
     firstCancellation.reject(new Error('409: a different turn is active'));
     await expect(stopped).resolves.toBe(false);
 
-    // A later terminal frame still cannot override the failed server barrier.
+    // #166 — the cancel request has RESOLVED (unsuccessfully), so the race the
+    // gate exists to bridge is over and a terminal frame is free to land the
+    // turn. Before the fix the gate stayed armed here for the rest of the
+    // chat's life and the composer's working edge swept over a finished turn.
     controlled.push({
       type: 'Finish',
       reason: 'cancelled',
@@ -1777,10 +1780,11 @@ describe('ChatStreamRegistry', () => {
     controlled.close();
     await firstSubmit;
 
-    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
-    await expect(controller.handleSubmit('must remain queued')).resolves.toBe(false);
-    expect(reply).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
 
+    // The generation itself is NOT forgotten: a retry still cancels the exact
+    // turn the user stopped, and still carries the Stop-and-Send intent that
+    // the failed attempt was made with.
     vi.mocked(cancelTurn).mockResolvedValueOnce({
       data: { cancelled: false, settled: true, continuation_lease: 'lease-retry' },
     } as never);
@@ -1793,6 +1797,96 @@ describe('ChatStreamRegistry', () => {
       continuation_owner_id: 'test-window-owner',
     });
     expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
+  /**
+   * #166 — the composer's working edge is `isRunningState(chatState)`, so a
+   * `chatState` that never returns to Idle is a figure that animates forever
+   * over a finished turn. Each case below is one exit from the stop machinery
+   * that used to leave the gate armed with nothing left to disarm it.
+   */
+  describe.each([
+    {
+      name: 'a cancel that rejects',
+      continuationPending: false,
+      arrange: () =>
+        vi.mocked(cancelTurn).mockRejectedValueOnce(new Error('network died mid-cancel')),
+    },
+    {
+      name: 'a cancel that reports settled: false',
+      continuationPending: false,
+      arrange: () =>
+        vi.mocked(cancelTurn).mockResolvedValueOnce({
+          data: { cancelled: true, settled: false },
+        } as never),
+    },
+    {
+      name: 'a Stop-and-Send response with no continuation lease',
+      continuationPending: true,
+      arrange: () =>
+        vi.mocked(cancelTurn).mockResolvedValueOnce({
+          data: { cancelled: true, settled: true },
+        } as never),
+    },
+  ])('after $name, the finished turn still returns to Idle (#166)', (scenario) => {
+    it('leaves the composer idle rather than animating forever', async () => {
+      const registry = new ChatStreamRegistry();
+      const controlled = createControlledStream();
+      vi.mocked(resumeAgent).mockResolvedValue({
+        data: { session: session('stranded-stop') },
+      } as never);
+      vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+      scenario.arrange();
+
+      const controller = registry.getController('stranded-stop');
+      const submit = controller.handleSubmit('long task');
+      await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+
+      await expect(controller.stopStreaming(scenario.continuationPending)).resolves.toBe(false);
+      expect(cancelTurn).toHaveBeenCalledTimes(1);
+
+      controlled.push({
+        type: 'Finish',
+        reason: 'done',
+        token_state: tokenState,
+      } as MessageEvent);
+      controlled.close();
+      await submit;
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+      expect(isRunningState(controller.getSnapshot().chatState)).toBe(false);
+    });
+
+    it('lets the user send again instead of bricking the chat', async () => {
+      const registry = new ChatStreamRegistry();
+      const controlled = createControlledStream();
+      vi.mocked(resumeAgent).mockResolvedValue({
+        data: { session: session('stranded-stop-resend') },
+      } as never);
+      vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+      scenario.arrange();
+
+      const controller = registry.getController('stranded-stop-resend');
+      const submit = controller.handleSubmit('long task');
+      await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+      await expect(controller.stopStreaming(scenario.continuationPending)).resolves.toBe(false);
+
+      controlled.push({
+        type: 'Finish',
+        reason: 'done',
+        token_state: tokenState,
+      } as MessageEvent);
+      controlled.close();
+      await submit;
+
+      vi.mocked(reply).mockResolvedValue({
+        stream: (async function* () {
+          yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+      await expect(controller.handleSubmit('the chat still works')).resolves.toBe(true);
+      expect(reply).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('adopts the authoritative successor after a typed stale-Stop mismatch', async () => {
