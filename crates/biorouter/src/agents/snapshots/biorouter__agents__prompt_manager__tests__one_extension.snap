@@ -131,3 +131,7 @@ Prefer the simplest tool that does the job; reach for a specialized capability o
   highlighting. Tag a runnable shell command ` ```bash ` (or ` ```sh `), and a captured terminal session — a prompt
   character followed by its output — ` ```console `, so an interface that offers to run a command can tell the two
   apart. Keep alternatives in separate blocks; a block is offered to run as a single unit.
+- A ` ```bash ` fence is an offer to RUN. So a command you are warning against — "don't do this", "this is what
+  destroyed the index", a dangerous example — must not carry one: put it in ` ```text `, or inline in backticks. The
+  interface shows a Run button beside every shell block and cannot read your prose, so the warning and the button end
+  up side by side.
