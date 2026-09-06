@@ -241,19 +241,36 @@ fn refuses_public_disclosure(tier: SessionClassification, tiers_enabled: bool) -
 async fn conversation_for(
     session: &Session,
     session_manager: &SessionManager,
-) -> ToolResult<Conversation> {
+) -> ToolResult<(Conversation, Option<SessionClassification>)> {
     match session_manager.get_session(&session.id, true).await {
-        Ok(loaded) => Ok(loaded
+        Ok(loaded) => Ok((
+            loaded
+                .conversation
+                .or_else(|| session.conversation.clone())
+                .unwrap_or_default(),
+            // The classification as it is NOW. `session.privacy_tier` is a
+            // snapshot taken when the agent loop handed this call its
+            // `Session`, and the classification is a RATCHET that a tool call
+            // can raise MID-turn — reading a private knowledge base is enough.
+            // `max` because the ratchet only ever rises, so a store answering
+            // lower is answering about an earlier moment.
+            Some(loaded.privacy_tier.max(session.privacy_tier)),
+        )),
+        // A read that fails still yields a conversation, because a degraded
+        // report beats no report — but it yields NO tier, and the filing half
+        // refuses without one. That asymmetry is the point: a degraded privacy
+        // decision does not beat no decision, because filing publishes.
+        Err(error) => session
             .conversation
-            .or_else(|| session.conversation.clone())
-            .unwrap_or_default()),
-        Err(error) => session.conversation.clone().ok_or_else(|| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("could not read this chat's history: {error}"),
-                None,
-            )
-        }),
+            .clone()
+            .map(|conversation| (conversation, None))
+            .ok_or_else(|| {
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("could not read this chat's history: {error}"),
+                    None,
+                )
+            }),
     }
 }
 
@@ -454,7 +471,7 @@ pub async fn handle_report_bug(
     let arguments = normalize_arguments(arguments);
     let home = dirs::home_dir();
     let home = home.as_deref();
-    let conversation = conversation_for(session, session_manager.as_ref()).await?;
+    let (conversation, effective_tier) = conversation_for(session, session_manager.as_ref()).await?;
     let evidence = evidence::collect(session, &conversation);
     let scrubbed_working_dir = redact::scrub(&evidence.working_dir, home).text;
     // ⚠ The transcript is the third source, and it is not a nicety. Measured
@@ -477,7 +494,6 @@ pub async fn handle_report_bug(
         )
         .await;
     }
-    let effective_tier = current_classification(session, session_manager.as_ref()).await?;
     file_report(
         &arguments,
         session,
@@ -489,41 +505,6 @@ pub async fn handle_report_bug(
         cancel,
     )
     .await
-}
-
-/// The classification as it is NOW, not as it was when the turn began.
-///
-/// `session.privacy_tier` is a snapshot taken when the agent loop handed this
-/// call its `Session`. The classification is a RATCHET — Gate B raises it at the
-/// top of a turn, and a tool call can raise it MID-turn, reading a private
-/// knowledge base being enough on its own. Filing publishes to a public tracker
-/// and cannot be taken back, so the only read that means anything is the one
-/// taken immediately before the decision.
-///
-/// `max` against the snapshot because the ratchet only ever rises: a store that
-/// answers with a lower value is answering about an earlier moment, and the
-/// higher of the two is the correct reading either way.
-///
-/// ⚠ A failed read REFUSES rather than falling back to the snapshot, which is
-/// the opposite of what [`conversation_for`] does — deliberately. A degraded
-/// report beats no report; a degraded privacy decision does not, because this
-/// one publishes.
-async fn current_classification(
-    session: &Session,
-    session_manager: &SessionManager,
-) -> ToolResult<SessionClassification> {
-    match session_manager.get_session(&session.id, false).await {
-        Ok(loaded) => Ok(loaded.privacy_tier.max(session.privacy_tier)),
-        Err(error) => Err(ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!(
-                "Could not confirm this chat's privacy classification, so nothing was \
-                 filed: {error}. A bug report is published to a public tracker, and \
-                 that is not a decision to take on a stale reading."
-            ),
-            None,
-        )),
-    }
 }
 
 /// Scrub the model's prose, render the body, and run the harness over it.
@@ -622,7 +603,7 @@ fn prepare_report(
 async fn file_report(
     arguments: &Value,
     session: &Session,
-    effective_tier: SessionClassification,
+    effective_tier: Option<SessionClassification>,
     evidence: Evidence,
     user_description: Option<String>,
     scrubbed_working_dir: &str,
@@ -640,6 +621,16 @@ async fn file_report(
 
     // Privacy: decided AFTER the report is written, deliberately. The work is
     // the expensive part and it is not wasted — the refusal hands it back.
+    let Some(effective_tier) = effective_tier else {
+        return Err(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Could not confirm this chat's privacy classification, so nothing was filed. \
+             A bug report is published to a public tracker, and that is not a decision to \
+             take on a stale reading."
+                .to_string(),
+            None,
+        ));
+    };
     if refuses_public_disclosure(effective_tier, crate::privacy::privacy_tiers_enabled()) {
         return text(private_session_refusal(&draft.title, &body, &repo));
     }
