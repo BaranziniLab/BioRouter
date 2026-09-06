@@ -486,6 +486,26 @@ struct ProblemDescription {
     from_transcript: bool,
 }
 
+/// Everything the report is written FROM, gathered once at the top of the call.
+///
+/// A parameter object rather than eight positional arguments, and the reason is
+/// not tidiness: these five travelled together through `handle_report_bug` →
+/// `file_report` → `prepare_report`, in an order no reader could check, and
+/// `evidence` and `scrubbed_working_dir` are two views of the same thing — the
+/// second is the first's `working_dir`, already through the scrubber. Passing
+/// them separately is how a caller comes to scrub one and not the other.
+struct ReportInputs<'a> {
+    arguments: &'a Value,
+    evidence: Evidence,
+    /// See [`ProblemDescription`]: `None` means neither the model nor the
+    /// transcript gave one, which is a question rather than a failure.
+    user_description: Option<ProblemDescription>,
+    /// `evidence.working_dir`, scrubbed. Held separately because `analyze` needs
+    /// it before `evidence` is consumed.
+    scrubbed_working_dir: &'a str,
+    home: Option<&'a std::path::Path>,
+}
+
 /// The whole tool.
 ///
 /// `session_manager` is a parameter rather than reached through an `Agent`, so
@@ -535,13 +555,15 @@ pub async fn handle_report_bug(
     }
     let effective_tier = current_classification(session, session_manager.as_ref()).await?;
     file_report(
-        &arguments,
+        ReportInputs {
+            arguments: &arguments,
+            evidence,
+            user_description,
+            scrubbed_working_dir: &scrubbed_working_dir,
+            home,
+        },
         session,
         effective_tier,
-        evidence,
-        user_description,
-        &scrubbed_working_dir,
-        home,
         cancel,
     )
     .await
@@ -590,12 +612,15 @@ async fn current_classification(
 /// Split out of [`file_report`] to stay under the `too_many_lines` baseline,
 /// and because everything here is pure: no approval, no network, no clock.
 fn prepare_report(
-    arguments: &Value,
-    user_description: Option<ProblemDescription>,
-    evidence: Evidence,
-    scrubbed_working_dir: &str,
-    home: Option<&std::path::Path>,
+    inputs: ReportInputs<'_>,
 ) -> Result<(Draft, String, redact::Scrubbed), ErrorData> {
+    let ReportInputs {
+        arguments,
+        evidence,
+        user_description,
+        scrubbed_working_dir,
+        home,
+    } = inputs;
     let title = string_arg(arguments, "title").ok_or_else(|| {
         invalid_params(
             "`title` is required to file. Call this tool with `action: \"analyze\"` first \
@@ -676,27 +701,18 @@ fn prepare_report(
 /// `too_many_lines` baseline, and because the boundary is a real one — nothing
 /// below here runs for an `analyze` call.
 async fn file_report(
-    arguments: &Value,
+    inputs: ReportInputs<'_>,
     session: &Session,
     effective_tier: SessionClassification,
-    evidence: Evidence,
-    user_description: Option<ProblemDescription>,
-    scrubbed_working_dir: &str,
-    home: Option<&std::path::Path>,
     cancel: Option<CancellationToken>,
 ) -> ToolResult<Vec<Content>> {
     // Sampled BEFORE `prepare_report` consumes it, because the card is the only
     // place this distinction can still be acted on.
-    let quoted_from_transcript = user_description
+    let quoted_from_transcript = inputs
+        .user_description
         .as_ref()
         .is_some_and(|description| description.from_transcript);
-    let (draft, body, title_scrub) = prepare_report(
-        arguments,
-        user_description,
-        evidence,
-        scrubbed_working_dir,
-        home,
-    )?;
+    let (draft, body, title_scrub) = prepare_report(inputs)?;
     let repo = issue::repo();
 
     // Privacy: decided AFTER the report is written, deliberately. The work is

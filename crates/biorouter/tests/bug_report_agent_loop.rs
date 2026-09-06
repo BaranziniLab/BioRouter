@@ -628,7 +628,9 @@ async fn filing_is_refused_from_an_integration_test_binary() {
     .expect_err("a test binary must never reach `gh issue create`");
 
     assert!(
-        error.to_string().contains("refusing to create a GitHub issue"),
+        error
+            .to_string()
+            .contains("refusing to create a GitHub issue"),
         "the refusal did not fire; this binary can file real issues: {error}"
     );
     // It bails before writing, so there is nothing to clean up — asserted, so a

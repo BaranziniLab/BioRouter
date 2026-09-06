@@ -449,7 +449,10 @@ mod tests {
             format!("-H 'Authorization: Basic {secret}'"),
         ] {
             let scrubbed = scrub(&line, None);
-            assert!(!scrubbed.text.contains(secret), "`{line}` survived: {scrubbed:?}");
+            assert!(
+                !scrubbed.text.contains(secret),
+                "`{line}` survived: {scrubbed:?}"
+            );
             assert!(
                 scrubbed.text.to_ascii_lowercase().contains("basic"),
                 "the header names WHICH request was rejected: {scrubbed:?}"
@@ -482,8 +485,14 @@ mod tests {
             "curl -sS -H 'Accept: application/json' -u alice:hunter2 https://x.example",
         ] {
             let scrubbed = scrub(line, None);
-            assert!(!scrubbed.text.contains("hunter2"), "`{line}` survived: {scrubbed:?}");
-            assert!(!scrubbed.text.contains("alice"), "the username identifies a person too: {scrubbed:?}");
+            assert!(
+                !scrubbed.text.contains("hunter2"),
+                "`{line}` survived: {scrubbed:?}"
+            );
+            assert!(
+                !scrubbed.text.contains("alice"),
+                "the username identifies a person too: {scrubbed:?}"
+            );
             assert!(scrubbed.text.contains("curl"), "{scrubbed:?}");
         }
     }
@@ -497,7 +506,10 @@ mod tests {
             "sort -u results.tsv",
         ] {
             let scrubbed = scrub(line, None);
-            assert_eq!(scrubbed.text, line, "a non-credential was rewritten: {scrubbed:?}");
+            assert_eq!(
+                scrubbed.text, line,
+                "a non-credential was rewritten: {scrubbed:?}"
+            );
         }
     }
 
