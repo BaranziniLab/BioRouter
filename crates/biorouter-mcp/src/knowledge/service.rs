@@ -474,6 +474,25 @@ impl FileLockGuard {
     /// on the base, while another base answered in 8 ms.
     const KB_READ_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
+    /// How long a DELETE may wait for the same lock.
+    ///
+    /// Same asymmetry as [`Self::KB_READ_LOCK_WAIT`] and a sharper edge. The
+    /// long wait exists so a write does not lose work; a delete has NO work to
+    /// lose — nothing is staged, the base is untouched, and retrying costs the
+    /// caller a second tool call.
+    ///
+    /// What it would otherwise wait out is precisely the case where waiting is
+    /// wrong. `kb_delete_base` refuses outright when it can see an open
+    /// transaction on the base, but that check reads ONE `KnowledgeServer`'s
+    /// registry and every chat gets its own; a transaction opened in another
+    /// conversation is invisible to it, so the delete sails past the refusal and
+    /// parks on the lock that transaction is holding instead. For half an hour,
+    /// in a chat that looks hung. The messages `lock_kb_path_waiting` raises on
+    /// elapse already say "most often that is an OPEN TRANSACTION: commit or
+    /// abort it" — this is what makes the user read them today rather than
+    /// after lunch.
+    const KB_DELETE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
     /// `acquire`, but bounded. Whatever holds the lock, the caller gets a
     /// sentence naming the base instead of a call that never returns.
     ///
@@ -875,11 +894,17 @@ impl StoredPrimary {
 /// Kept here rather than importing Biorouter's Soul module because the MCP
 /// crate is below the application crate in the dependency graph.
 ///
-/// `pub(crate)` because `server::kb_delete_base` refuses this id, and the
-/// refusal must name the SAME base this file resolves an unexpressed primary
-/// to. A second `"soul"` literal over there is how the model-facing refusal and
-/// the product default come to disagree after someone renames one of them.
-pub(crate) const DEFAULT_PRIMARY_KB_ID: &str = "soul";
+/// `server::kb_delete_base` refuses this id, and the refusal must name the SAME
+/// base this file resolves an unexpressed primary to. A second `"soul"` literal
+/// over there is how the model-facing refusal and the product default come to
+/// disagree after someone renames one of them.
+///
+/// ⚠ `pub`, so `biorouter::knowledge::soul::SOUL_KB_ID` — the id the SEEDER
+/// writes, one crate up — can be defined *as* this rather than beside it. It
+/// was a second `"soul"` literal in a different crate with nothing pinning the
+/// two equal, and the pair a delete guard cannot afford to have drift is
+/// exactly "the id that is refused" and "the id that is created".
+pub const DEFAULT_PRIMARY_KB_ID: &str = "soul";
 
 /// "No primary at this scope" is always an explicit blank-file choice. At
 /// machine scope an absent file now means "use the product default Soul", so
@@ -1667,12 +1692,35 @@ impl KnowledgeService {
         T: Send + 'static,
         F: FnOnce(&KnowledgeService, &CancellationToken) -> Result<T> + Send + 'static,
     {
+        self.run_existing_kb_mutation_waiting(
+            kb_id,
+            cancel,
+            FileLockGuard::KB_WRITE_LOCK_WAIT,
+            operation,
+        )
+        .await
+    }
+
+    /// [`Self::run_existing_kb_mutation`], with the caller choosing how long to
+    /// wait for the base. Only a mutation that loses nothing by giving up may
+    /// shorten it — see [`FileLockGuard::KB_DELETE_LOCK_WAIT`].
+    async fn run_existing_kb_mutation_waiting<T, F>(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        wait: std::time::Duration,
+        operation: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&KnowledgeService, &CancellationToken) -> Result<T> + Send + 'static,
+    {
         let operation_cancel = cancel
             .map(CancellationToken::child_token)
             .unwrap_or_default();
         let cancel_operation_on_drop = CancelOnDrop(operation_cancel.clone());
         let guard = self
-            .lock_existing_kb_cancellable(kb_id, Some(&operation_cancel))
+            .lock_existing_kb_waiting(kb_id, Some(&operation_cancel), wait)
             .await?;
         let svc = self.clone();
         let operation_cancel_for_task = operation_cancel.clone();
@@ -2661,9 +2709,17 @@ impl KnowledgeService {
     ) -> Result<()> {
         let lock_id = id.to_string();
         let id = lock_id.clone();
-        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
-            svc.delete_base_under_kb_lock(&id, Some(cancel))
-        })
+        // ⚠ NOT the 1800 s write wait. A delete has no staged work to lose, and
+        // the holder it would be waiting out is most often an open transaction
+        // in another conversation — which `kb_delete_base`'s own refusal cannot
+        // see, because each chat's `KnowledgeServer` keeps its own transaction
+        // registry. See `FileLockGuard::KB_DELETE_LOCK_WAIT`.
+        self.run_existing_kb_mutation_waiting(
+            &lock_id,
+            cancel,
+            FileLockGuard::KB_DELETE_LOCK_WAIT,
+            move |svc, cancel| svc.delete_base_under_kb_lock(&id, Some(cancel)),
+        )
         .await
     }
 
