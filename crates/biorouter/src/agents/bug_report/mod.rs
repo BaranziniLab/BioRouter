@@ -385,6 +385,23 @@ fn private_session_refusal(title: &str, body: &str, repo: &str) -> String {
     )
 }
 
+/// The preview's own ceiling, in characters of pretty-printed JSON.
+///
+/// ⚠ NOT [`ToolPreview::for_tool_call`]'s shared 4,000, and the difference is
+/// the whole approval. That constant governs every tool's card, where the
+/// arguments are context for a judgement about the CALL; here the argument IS
+/// the artefact, and `redact`'s module doc states the dependency plainly — "the
+/// person is the last check and the design assumes it". A card that showed the
+/// first 4,000 characters of a longer body would collect consent for text
+/// nobody was shown, and it would say so only in a one-line truncation note.
+///
+/// Doubling [`redact::MAX_ISSUE_BODY_CHARS`] is the pre-image of a body that
+/// has ALREADY passed `validate_issue`: pretty JSON escapes every newline and
+/// quote to two characters and indents, so a 60,000-character body renders to
+/// well under 120,000. The frame stays bounded, by this tool's own validation
+/// rather than by a cap shared with tools that have none.
+const APPROVAL_PREVIEW_CHARS: usize = redact::MAX_ISSUE_BODY_CHARS * 2;
+
 /// Build the approval card.
 ///
 /// The body rides in `arguments` rather than in `preview`'s structured shape:
@@ -397,6 +414,7 @@ fn approval_request(
     repo: &str,
     filer: &Filer,
     classification: SessionClassification,
+    quoted_from_transcript: bool,
 ) -> UserActionRequest {
     let arguments = serde_json::json!({
         "repository": format!("github.com/{repo}"),
@@ -412,6 +430,17 @@ fn approval_request(
     .expect("the approval arguments are an object")
     .clone();
 
+    // The model omitted `description`, so "Describe the bug" is the user's own
+    // last message quoted back at them (`evidence::described_problem`). Say so:
+    // reading one's own sentence under a heading one did not write is exactly
+    // the case where a reader skims past text they assume the model composed.
+    let quoted = if quoted_from_transcript {
+        " ⚠ \"Describe the bug\" is YOUR last message, quoted verbatim — the model did \
+         not write it."
+    } else {
+        ""
+    };
+
     let redirected = if repo == issue::DEFAULT_REPO {
         String::new()
     } else {
@@ -424,14 +453,16 @@ fn approval_request(
 
     UserActionRequest::ToolApproval(ToolApprovalRequest {
         tool_name: REPORT_BUG_TOOL_NAME.to_string(),
-        preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
-            REPORT_BUG_TOOL_NAME,
-            &arguments,
+        preview: Some(
+            crate::conversation::tool_preview::ToolPreview::arguments_within(
+                &arguments,
+                APPROVAL_PREVIEW_CHARS,
+            ),
         ),
         arguments,
         prompt: Some(format!(
-            "Publish this bug report to the public issue tracker? {}{redirected} Read the \
-             body below: everything in it becomes world-readable and permanent.",
+            "Publish this bug report to the public issue tracker? {}{redirected}{quoted} Read \
+             the body below: everything in it becomes world-readable and permanent.",
             filer.describe(repo)
         )),
         // High, not Medium: the act is irreversible and public. `install_extension`
@@ -439,6 +470,20 @@ fn approval_request(
         risk: Some(ToolRisk::High),
         requires_user_proof: true,
     })
+}
+
+/// The "Describe the bug" text, and where it came from.
+///
+/// The provenance is not bookkeeping: a description the MODEL wrote is prose
+/// composed for a public tracker, and one lifted from the transcript is the
+/// user's own sentence, published verbatim under a heading they did not choose.
+/// Both are legitimate — see [`evidence::described_problem`] for the measured
+/// reason the fallback exists — but only one of them needs the approval card to
+/// say so before it becomes permanent.
+struct ProblemDescription {
+    text: String,
+    /// Quoted from the user's own last message rather than written by the model.
+    from_transcript: bool,
 }
 
 /// The whole tool.
@@ -467,12 +512,23 @@ pub async fn handle_report_bug(
     // on it.
     let user_description = string_arg(&arguments, "description")
         .or_else(|| string_arg(&arguments, "user_description"))
-        .or_else(|| evidence::described_problem(&evidence.recent_user_messages));
+        .map(|text| ProblemDescription {
+            text,
+            from_transcript: false,
+        })
+        .or_else(|| {
+            evidence::described_problem(&evidence.recent_user_messages).map(|text| {
+                ProblemDescription {
+                    text,
+                    from_transcript: true,
+                }
+            })
+        });
 
     if Action::infer(&arguments) == Action::Analyze {
         return analyze(
             &evidence,
-            user_description.as_deref(),
+            user_description.as_ref().map(|d| d.text.as_str()),
             &scrubbed_working_dir,
         )
         .await;
@@ -535,7 +591,7 @@ async fn current_classification(
 /// and because everything here is pure: no approval, no network, no clock.
 fn prepare_report(
     arguments: &Value,
-    user_description: Option<String>,
+    user_description: Option<ProblemDescription>,
     evidence: Evidence,
     scrubbed_working_dir: &str,
     home: Option<&std::path::Path>,
@@ -546,7 +602,7 @@ fn prepare_report(
              if you do not yet know what the report should say.",
         )
     })?;
-    let description = user_description.ok_or_else(|| {
+    let description = user_description.map(|d| d.text).ok_or_else(|| {
         invalid_params(
             "`description` is required to file: it becomes the report's \"Describe the \
              bug\" section. Ask the user what went wrong rather than inventing one.",
@@ -624,11 +680,16 @@ async fn file_report(
     session: &Session,
     effective_tier: SessionClassification,
     evidence: Evidence,
-    user_description: Option<String>,
+    user_description: Option<ProblemDescription>,
     scrubbed_working_dir: &str,
     home: Option<&std::path::Path>,
     cancel: Option<CancellationToken>,
 ) -> ToolResult<Vec<Content>> {
+    // Sampled BEFORE `prepare_report` consumes it, because the card is the only
+    // place this distinction can still be acted on.
+    let quoted_from_transcript = user_description
+        .as_ref()
+        .is_some_and(|description| description.from_transcript);
     let (draft, body, title_scrub) = prepare_report(
         arguments,
         user_description,
@@ -663,7 +724,14 @@ async fn file_report(
     let parked = PendingUserActions::global().park(
         Some(&session.id),
         None,
-        approval_request(&draft.title, &body, &repo, &filer, effective_tier),
+        approval_request(
+            &draft.title,
+            &body,
+            &repo,
+            &filer,
+            effective_tier,
+            quoted_from_transcript,
+        ),
     );
     match parked.wait(APPROVAL_TTL, cancel.as_ref()).await {
         UserActionOutcome::Approved { .. } => {}
@@ -1128,6 +1196,227 @@ mod tests {
         let body = body_of(&running.await.unwrap());
         assert!(body.contains("was refused by the user"), "{body}");
         assert!(!body.contains("Filed:"), "{body}");
+    }
+
+    /// The card must show the WHOLE body, not the first four thousand
+    /// characters of it.
+    ///
+    /// `ToolPreview::for_tool_call` clips at `MAX_ARGS_CHARS`, which is right
+    /// for a tool whose arguments are context for a judgement about the call.
+    /// Here the argument IS the artefact: `redact`'s own module doc says "the
+    /// person is the last check and the design assumes it", and a preview that
+    /// stopped at 4,000 characters would collect consent for text nobody was
+    /// shown — announced only by a one-line truncation note.
+    #[tokio::test]
+    async fn a_long_body_reaches_the_card_whole() {
+        let (_dir, manager, session) = session_with_failures(2).await;
+        let session_id = session.id.clone();
+
+        // Comfortably past the shared 4,000-character cap, and made of prose so
+        // nothing in it trips the redaction harness.
+        let long_context = "The panel stays blank and the console is quiet. ".repeat(150);
+        let marker = "ONLY-AT-THE-VERY-END-OF-THE-BODY";
+        let mut arguments = file_args();
+        arguments["additional"] = Value::String(format!("{long_context}{marker}"));
+
+        let running = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            let session = session.clone();
+            async move { handle_report_bug(arguments, &session, manager, None).await }
+        });
+
+        let registry = PendingUserActions::global();
+        let (id, preview, body) = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(message) = registry
+                    .pending_cards_for_session(&session_id)
+                    .into_iter()
+                    .next()
+                {
+                    if let Some(MessageContent::ActionRequired(action)) =
+                        message.content.into_iter().next()
+                    {
+                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                            id,
+                            preview,
+                            arguments,
+                            ..
+                        } = action.data
+                        {
+                            let body = arguments
+                                .get("body")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            return (id, preview, body);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the file half must raise an approval card");
+
+        assert!(
+            body.chars().count() > 4_000,
+            "the fixture must exceed the shared preview cap or it proves nothing: {} chars",
+            body.chars().count()
+        );
+        let Some(crate::conversation::tool_preview::ToolPreview::Arguments { json, truncated }) =
+            preview
+        else {
+            panic!("the card must carry an Arguments preview");
+        };
+        assert!(
+            !truncated,
+            "a bug report's card must not be clipped: the user is asked to read the exact \
+             text that becomes world-readable and permanent"
+        );
+        assert!(
+            json.contains(marker),
+            "the END of the body never reached the card, so it was approved unseen"
+        );
+
+        registry.resolve_in_session(
+            &session_id,
+            &id,
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+            DecisionAuthority::for_test_proven(),
+        );
+        let _ = running.await.unwrap();
+    }
+
+    /// When the model omits `description`, the "Describe the bug" section is
+    /// the user's own last message, published verbatim under a heading they did
+    /// not write. Legitimate — see `evidence::described_problem` for the
+    /// measured reason the fallback exists — but the card has to SAY so, because
+    /// a reader skims past text they assume the model composed.
+    #[tokio::test]
+    async fn a_card_says_when_the_description_is_the_users_own_words() {
+        let (_dir, manager, session) = session_with_failures(2).await;
+        let session_id = session.id.clone();
+        manager
+            .add_message(
+                &session_id,
+                &Message::user().with_text(
+                    "Report a bug: the Auto Visualiser renders a blank panel for a \
+                     single-row dataset",
+                ),
+            )
+            .await
+            .unwrap();
+
+        // No `description`: the tool has to reach for the transcript.
+        let arguments = args(serde_json::json!({
+            "action": "file",
+            "title": "Chart panel renders blank for a single-row dataset",
+            "steps": ["Open a chat", "Ask for a chart of one row"],
+            "expected": "The chart renders."
+        }));
+
+        let running = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            let session = session.clone();
+            async move { handle_report_bug(arguments, &session, manager, None).await }
+        });
+
+        let registry = PendingUserActions::global();
+        let (id, prompt) = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(message) = registry
+                    .pending_cards_for_session(&session_id)
+                    .into_iter()
+                    .next()
+                {
+                    if let Some(MessageContent::ActionRequired(action)) =
+                        message.content.into_iter().next()
+                    {
+                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                            id, prompt, ..
+                        } = action.data
+                        {
+                            return (id, prompt.unwrap_or_default());
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the file half must raise an approval card");
+
+        assert!(
+            prompt.contains("YOUR last message"),
+            "the card must say the description is quoted from the user: {prompt}"
+        );
+
+        registry.resolve_in_session(
+            &session_id,
+            &id,
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+            DecisionAuthority::for_test_proven(),
+        );
+        let _ = running.await.unwrap();
+    }
+
+    /// The mirror: a description the MODEL wrote must NOT be announced as the
+    /// user's own words. A note that appears on every card is a note nobody
+    /// reads.
+    #[tokio::test]
+    async fn a_model_written_description_is_not_announced_as_the_users_own() {
+        let (_dir, manager, session) = session_with_failures(2).await;
+        let session_id = session.id.clone();
+
+        let running = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            let session = session.clone();
+            async move { handle_report_bug(file_args(), &session, manager, None).await }
+        });
+
+        let registry = PendingUserActions::global();
+        let (id, prompt) = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(message) = registry
+                    .pending_cards_for_session(&session_id)
+                    .into_iter()
+                    .next()
+                {
+                    if let Some(MessageContent::ActionRequired(action)) =
+                        message.content.into_iter().next()
+                    {
+                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                            id, prompt, ..
+                        } = action.data
+                        {
+                            return (id, prompt.unwrap_or_default());
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the file half must raise an approval card");
+
+        assert!(
+            !prompt.contains("YOUR last message"),
+            "the model wrote this description: {prompt}"
+        );
+
+        registry.resolve_in_session(
+            &session_id,
+            &id,
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+            DecisionAuthority::for_test_proven(),
+        );
+        let _ = running.await.unwrap();
     }
 
     /// ⚠ A private chat is not filed from, whatever the user clicks — and the

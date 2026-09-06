@@ -123,6 +123,37 @@ impl ToolPreview {
             _ => Some(arguments_preview(arguments)),
         }
     }
+
+    /// The arguments, pretty-printed, with a budget the CALLER chooses.
+    ///
+    /// [`Self::for_tool_call`] clips at [`MAX_ARGS_CHARS`], and that is the
+    /// right rule for a tool whose arguments are *incidental* to what it does:
+    /// the card shows them so nobody confirms blind, and four thousand
+    /// characters is more than enough context for that judgement.
+    ///
+    /// It is the wrong rule for a tool whose ARGUMENT IS THE ARTEFACT — where
+    /// the question is not "does this look like the right call?" but "here is
+    /// the exact text that will be published, read it". `platform__report_bug`
+    /// is that tool: its body becomes a world-readable, permanent GitHub issue,
+    /// and the redaction harness in `bug_report::redact` says so in as many
+    /// words — "the person is the last check and the design assumes it". A card
+    /// that showed the first four thousand characters of a longer body would be
+    /// collecting consent for text nobody was shown.
+    ///
+    /// ⚠ Note what this does NOT cost: the full arguments are already on the
+    /// wire. `ToolApprovalRequest` carries `arguments` beside `preview`, so the
+    /// body rides the frame whether or not the preview repeats it — clipping
+    /// the preview shrinks what the user can READ, not what is sent.
+    ///
+    /// Still clips, and still reports it. A caller-chosen budget is not the
+    /// absence of one, and the caller is expected to pass a ceiling its own
+    /// validation has already enforced.
+    pub fn arguments_within(arguments: &JsonObject, max_chars: usize) -> Self {
+        let rendered = serde_json::to_string_pretty(arguments)
+            .unwrap_or_else(|_| "<unserializable arguments>".to_string());
+        let (json, truncated) = clip_chars(&rendered, max_chars);
+        ToolPreview::Arguments { json, truncated }
+    }
 }
 
 /// Tool names arrive namespaced (`developer__shell`); the shape depends only on
@@ -283,10 +314,7 @@ fn unified_diff_preview(path: &str, diff: &str) -> ToolPreview {
 }
 
 fn arguments_preview(arguments: &JsonObject) -> ToolPreview {
-    let rendered = serde_json::to_string_pretty(arguments)
-        .unwrap_or_else(|_| "<unserializable arguments>".to_string());
-    let (json, truncated) = clip_chars(&rendered, MAX_ARGS_CHARS);
-    ToolPreview::Arguments { json, truncated }
+    ToolPreview::arguments_within(arguments, MAX_ARGS_CHARS)
 }
 
 /// An empty string has no lines; `"".lines()` already yields nothing, but being
