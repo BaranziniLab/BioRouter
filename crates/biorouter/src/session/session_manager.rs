@@ -2167,7 +2167,7 @@ impl SessionManager {
     /// route and the CLI/TUI `/diverge` command.
     ///
     /// The branch conversation is trimmed to end at the last *complete*
-    /// assistant answer (see `trim_to_last_complete_answer_at`), so a diverge
+    /// assistant answer (see `branch_conversation_at`), so a diverge
     /// triggered while the agent is still generating or calling tools never
     /// leaves a dangling, unanswered turn in the new session. `anchor_ms` (the
     /// `created` timestamp of the message a per-message Diverge button was
@@ -2529,47 +2529,152 @@ fn is_assistant_terminal_answer(m: &Message) -> bool {
     m.role == Role::Assistant && !m.is_tool_call() && !m.as_concat_text().trim().is_empty()
 }
 
-/// Trim a conversation for a diverged branch so it ends at the last complete
-/// assistant answer. A diverge fired while the agent is still generating or
-/// calling tools therefore branches from the previous finished response rather
-/// than leaving a dangling, unanswered turn.
+/// Where a branch's history ends, resolved from whatever anchor the client
+/// supplied.
 ///
-/// `anchor_ms` bounds the branch to messages created at or before it — used by
-/// the per-message Diverge button to branch from exactly that answer. With
-/// `None`, the most recent complete answer in the whole conversation is used.
-/// If there is no complete answer at all (e.g. diverged before the very first
-/// reply landed), the branch starts empty rather than carrying an orphaned
-/// question.
-/// Trim a branch to end at the last *complete* assistant answer within the
-/// prefix up to (and including) the anchor.
+/// A branch is always a **prefix** of its parent, so every variant names a cut
+/// point rather than a predicate. [`BranchCut::Whole`] is also the deliberate
+/// landing place for an anchor that cannot be trusted — see
+/// [`resolve_branch_anchor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchCut {
+    /// Keep every message.
+    Whole,
+    /// Keep `msgs[..=idx]`.
+    Through(usize),
+    /// Keep nothing: the anchor predates the conversation.
+    Nothing,
+}
+
+/// Resolve the branch point a client asked for against the conversation as it
+/// is actually stored.
 ///
-/// The anchor is resolved by durable message id first (`anchor_uid`), which is
-/// unambiguous even when two messages share a whole-second `created` — the
-/// same-second collision that `anchor_ms` (`m.created <= ts`, inclusive) could
-/// over-truncate (BR-45). A missing/unknown `anchor_uid` falls back to the
-/// timestamp anchor, and `None`/`None` keeps the whole conversation.
-pub(crate) fn trim_to_last_complete_answer_at(
+/// The governing rule is issue #167's: **a branch that keeps too much is
+/// recoverable; one that discards the conversation is not.** Every ambiguous or
+/// unverifiable case therefore widens the branch rather than narrowing it.
+///
+/// `anchor_uid` is the durable `Message.id` of the assistant answer the
+/// per-message Branch control was clicked on; `anchor_ms` is that same
+/// message's `created`. The desktop sends both, and this uses the second to
+/// CHECK the first:
+///
+/// * **Unresolvable id → keep everything.** The client's view of a live turn is
+///   structurally short of the store (`chatStreamStore.tsx`'s
+///   `viewNamesEveryStoredRow`: one streamed reply becomes two or three rows and
+///   only the first keeps the id the client was shown; the `MessagesPersisted`
+///   frame that publishes the rest is not consumed). An id we cannot find is
+///   therefore an ordinary, expected state — and it is not evidence about
+///   *where* the user clicked, so it must not silently become a timestamp cut.
+///   That silent degradation is what BR-45 left behind and what this replaces.
+/// * **An id that resolves EARLIER than the timestamp says → keep everything.**
+///   This is #167 itself. The reporter pressed Branch late in a long chat and
+///   got a branch holding only the first exchange, because the id their client
+///   held for that message was one storage had given to the first reply. The
+///   two anchors describe ONE message, so `created < anchor_ms` proves they
+///   disagree and the id is the stale half. Note the comparison is strict: the
+///   rows one reply is split into share (or postdate) its `created`, so an
+///   honest anchor never trips this.
+/// * **A duplicated id → the LAST match, never the first.** Storage enforces
+///   `UNIQUE(session_id, msg_uid)`, so this cannot arise from a stored
+///   conversation; it can from one assembled in memory, and `position()`'s
+///   first-match would cut at the earliest of them.
+///
+/// With no `anchor_uid` at all the legacy timestamp anchor applies, as a
+/// **prefix** — the last index created at or before `anchor_ms`. It is
+/// deliberately not a filter over the whole conversation: `created` is not
+/// monotonic in real chats (a compaction writes its summary rows with the
+/// current time and leaves the `/compact` request behind them carrying an older
+/// one), and a filter keeps late-but-older messages while dropping
+/// early-but-newer ones — producing a branch with holes in it, and orphaning
+/// tool responses from their requests.
+fn resolve_branch_anchor(
+    msgs: &[Message],
+    anchor_uid: Option<&str>,
+    anchor_ms: Option<i64>,
+) -> BranchCut {
+    let Some(uid) = anchor_uid else {
+        // Legacy clients (and the CLI) send only a timestamp. Cut at the last
+        // message at or before it; a conversation whose every message postdates
+        // the anchor cuts to nothing.
+        return match anchor_ms {
+            Some(ts) => msgs
+                .iter()
+                .rposition(|m| m.created <= ts)
+                .map_or(BranchCut::Nothing, BranchCut::Through),
+            None => BranchCut::Whole,
+        };
+    };
+
+    let Some(idx) = msgs.iter().rposition(|m| m.id.as_deref() == Some(uid)) else {
+        warn!(
+            anchor_uid = %uid,
+            messages = msgs.len(),
+            "branch anchor names a message this conversation does not hold; \
+             branching from the end of the conversation instead of guessing"
+        );
+        return BranchCut::Whole;
+    };
+
+    if let Some(ts) = anchor_ms {
+        if msgs[idx].created < ts {
+            warn!(
+                anchor_uid = %uid,
+                anchored_at = msgs[idx].created,
+                clicked_at = ts,
+                "branch anchor id resolves to a message older than the anchor \
+                 timestamp; treating the id as stale and branching from the end \
+                 of the conversation (issue #167)"
+            );
+            return BranchCut::Whole;
+        }
+    }
+
+    BranchCut::Through(idx)
+}
+
+/// Build a diverged branch's conversation: the parent's history, cut at the
+/// anchor the client asked for, then trimmed back to the last complete
+/// assistant answer inside that cut. A diverge fired while the agent is still
+/// generating or calling tools therefore branches from the previous finished
+/// response rather than leaving a dangling, unanswered turn.
+///
+/// The cut comes from [`resolve_branch_anchor`], which prefers the durable
+/// message id and falls back to keeping the whole conversation — never to a
+/// narrower guess — when that id cannot be trusted. With no anchor at all the
+/// most recent complete answer in the whole conversation is used. If there is
+/// no complete answer within the cut (e.g. diverged before the very first reply
+/// landed), the branch starts empty rather than carrying an orphaned question.
+///
+/// Returns the branch conversation together with the id of the message the
+/// anchor was actually honoured at, or `None` when no anchor was honoured. The
+/// caller records that as `branch_point_msg_uid`; the two are computed here, in
+/// one place, so a refused anchor can never be written to the row as though it
+/// had been used (issue #167).
+pub(crate) fn branch_conversation_at(
     conversation: &Conversation,
     anchor_uid: Option<&str>,
     anchor_ms: Option<i64>,
-) -> Conversation {
+) -> (Conversation, Option<String>) {
     let msgs = conversation.messages();
-    let kept: Vec<&Message> =
-        match anchor_uid.and_then(|uid| msgs.iter().position(|m| m.id.as_deref() == Some(uid))) {
-            Some(end) => msgs[..=end].iter().collect(),
-            None => msgs
-                .iter()
-                .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
-                .collect(),
-        };
+    let cut = resolve_branch_anchor(msgs, anchor_uid, anchor_ms);
+    let honoured = match cut {
+        BranchCut::Through(idx) => msgs[idx].id.clone(),
+        BranchCut::Whole | BranchCut::Nothing => None,
+    };
+    (trim_to_last_complete_answer_cut(msgs, cut), honoured)
+}
 
-    match kept.iter().rposition(|m| is_assistant_terminal_answer(m)) {
-        Some(end) => Conversation::new_unvalidated(
-            kept[..=end]
-                .iter()
-                .map(|m| (*m).clone())
-                .collect::<Vec<Message>>(),
-        ),
+/// The second half of the trim: take the prefix `cut` names, then back up to the
+/// last complete assistant answer inside it.
+fn trim_to_last_complete_answer_cut(msgs: &[Message], cut: BranchCut) -> Conversation {
+    let kept: &[Message] = match cut {
+        BranchCut::Nothing => &[],
+        BranchCut::Through(end) => msgs.get(..=end).unwrap_or(msgs),
+        BranchCut::Whole => msgs,
+    };
+
+    match kept.iter().rposition(is_assistant_terminal_answer) {
+        Some(end) => Conversation::new_unvalidated(kept[..=end].to_vec()),
         None => Conversation::default(),
     }
 }
@@ -6975,15 +7080,21 @@ impl SessionStorage {
         // carries over an unanswered question or a dangling tool call). The
         // durable message id (`anchor_uid`) is preferred over the timestamp so a
         // divergence at one of two same-second messages does not over-truncate.
-        let branch_conversation = original
-            .conversation
-            .as_ref()
-            .map(|c| trim_to_last_complete_answer_at(c, anchor_uid.as_deref(), anchor_ms))
-            .unwrap_or_default();
+        //
+        // The cut is resolved ONCE, here, and reused for the branch point below
+        // — issue #167. Recording the *requested* anchor instead was a claim
+        // nothing checked: an id `resolve_branch_anchor` refused (unknown, or
+        // older than the timestamp beside it) was still written to
+        // `branch_point_msg_uid`, so the row named a divergence point the branch
+        // had deliberately not been cut at.
+        let (branch_conversation, honoured_anchor) = original.conversation.as_ref().map_or_else(
+            || (Conversation::default(), None),
+            |c| branch_conversation_at(c, anchor_uid.as_deref(), anchor_ms),
+        );
 
-        // Record the divergence point: the explicit anchor id when supplied, else the
-        // id of the last message actually carried into the branch.
-        let branch_point = anchor_uid.clone().or_else(|| {
+        // Record the divergence point: the anchor that was actually honoured,
+        // else the id of the last message carried into the branch.
+        let branch_point = honoured_anchor.or_else(|| {
             branch_conversation
                 .messages()
                 .last()
@@ -11443,6 +11554,16 @@ mod tests {
 
     // ── Branch trimming (start exactly from the last complete answer) ───────
 
+    /// The branch conversation a pair of anchors produces, dropping
+    /// `branch_conversation_at`'s honoured-anchor half.
+    fn branched(
+        conv: &Conversation,
+        anchor_uid: Option<&str>,
+        anchor_ms: Option<i64>,
+    ) -> Conversation {
+        branch_conversation_at(conv, anchor_uid, anchor_ms).0
+    }
+
     fn umsg(created: i64, text: &str) -> Message {
         Message {
             id: None,
@@ -11483,7 +11604,7 @@ mod tests {
             umsg(3, "q2"),
             amsg(4, "a2"),
         ]);
-        let t = trim_to_last_complete_answer_at(&conv, None, None);
+        let t = branched(&conv, None, None);
         assert_eq!(t.messages().len(), 4);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a2");
     }
@@ -11493,7 +11614,7 @@ mod tests {
         // The reported bug: diverge fired while the agent was still generating
         // the answer to q2, so the DB has q2 persisted with no answer yet.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
-        let t = trim_to_last_complete_answer_at(&conv, None, None);
+        let t = branched(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -11509,7 +11630,7 @@ mod tests {
             amsg(4, ""),
             atool(5),
         ]);
-        let t = trim_to_last_complete_answer_at(&conv, None, None);
+        let t = branched(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -11523,7 +11644,7 @@ mod tests {
             amsg(40, "a2"),
         ]);
         // Per-message Diverge button clicked on a1 (created=20).
-        let t = trim_to_last_complete_answer_at(&conv, None, Some(20));
+        let t = branched(&conv, None, Some(20));
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -11532,8 +11653,266 @@ mod tests {
     fn test_trim_empty_when_no_complete_answer() {
         // Diverged before the first reply landed: only an unanswered question.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1")]);
-        let t = trim_to_last_complete_answer_at(&conv, None, None);
+        let t = branched(&conv, None, None);
         assert!(t.messages().is_empty());
+    }
+
+    // ── Issue #167: a branch anchor that cannot be trusted must widen the
+    //    branch, never narrow it ────────────────────────────────────────────
+
+    /// A realistic tool-using exchange: the assistant says what it is about to
+    /// do, calls a tool, reads the result, then answers. `id_prefix` names the
+    /// two assistant *text* rows, which are the only ones the desktop renders a
+    /// Branch control on.
+    fn tool_using_exchange(base: i64, id_prefix: &str, question: &str) -> Vec<Message> {
+        let call = format!("{id_prefix}_call");
+        let mut preamble = Message::assistant()
+            .with_text("Let me look.")
+            .with_id(format!("{id_prefix}-preamble"));
+        preamble.created = base + 1;
+        let mut request = Message::assistant()
+            .with_id(format!("{id_prefix}-req"))
+            .with_tool_request(
+                call.clone(),
+                Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: "shell".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            );
+        request.created = base + 2;
+        let mut response = Message::user()
+            .with_id(format!("{id_prefix}-resp"))
+            .with_tool_response(
+                call,
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("ok"),
+                ])),
+            );
+        response.created = base + 3;
+        let mut answer = Message::assistant()
+            .with_text(format!("answer to {question}"))
+            .with_id(format!("{id_prefix}-answer"));
+        answer.created = base + 4;
+
+        let mut q = umsg(base, question);
+        q.id = Some(format!("{id_prefix}-q"));
+        vec![q, preamble, request, response, answer]
+    }
+
+    /// Three tool-using exchanges — the shape #167 was reported against.
+    fn tool_using_conversation() -> Conversation {
+        Conversation::new_unvalidated(
+            tool_using_exchange(100, "e1", "q1")
+                .into_iter()
+                .chain(tool_using_exchange(200, "e2", "q2"))
+                .chain(tool_using_exchange(300, "e3", "q3"))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn trim_anchored_on_a_tool_using_answer_keeps_the_whole_history_before_it() {
+        let conv = tool_using_conversation();
+        // Branch clicked on the LAST answer: everything is carried over.
+        let t = branched(&conv, Some("e3-answer"), Some(304));
+        assert_eq!(t.messages().len(), 15);
+        assert_eq!(
+            t.messages().last().unwrap().as_concat_text(),
+            "answer to q3"
+        );
+
+        // Branch clicked on the MIDDLE answer: the branch ends there, and the
+        // tool request/response pair of that exchange comes with it.
+        let t = branched(&conv, Some("e2-answer"), Some(204));
+        assert_eq!(t.messages().len(), 10);
+        assert_eq!(
+            t.messages().last().unwrap().as_concat_text(),
+            "answer to q2"
+        );
+    }
+
+    #[test]
+    fn trim_refuses_an_anchor_id_that_resolves_older_than_its_own_timestamp() {
+        // Issue #167, reproduced. The user pressed Branch on the last answer
+        // (created 304) but the id their client held for that message is one
+        // storage had given to the FIRST reply. Resolving the id alone cuts the
+        // branch down to the first exchange and silently discards the chat.
+        let conv = tool_using_conversation();
+        let t = branched(&conv, Some("e1-preamble"), Some(304));
+
+        assert_eq!(
+            t.messages().len(),
+            15,
+            "a stale id must widen the branch to the whole conversation, not \
+             truncate it at the message the id happens to name"
+        );
+        assert_eq!(
+            t.messages().last().unwrap().as_concat_text(),
+            "answer to q3"
+        );
+    }
+
+    #[test]
+    fn trim_honours_an_anchor_row_created_after_the_clicked_message() {
+        // One streamed reply is stored as several rows and only the first keeps
+        // the id the client was shown; the rest are minted as they are built, so
+        // a row can carry a `created` a second LATER than the message on screen.
+        // That is an honest anchor and must still cut the branch.
+        let conv = tool_using_conversation();
+        let t = branched(&conv, Some("e2-answer"), Some(203));
+        assert_eq!(t.messages().len(), 10);
+        assert_eq!(
+            t.messages().last().unwrap().as_concat_text(),
+            "answer to q2"
+        );
+    }
+
+    #[test]
+    fn trim_keeps_everything_when_the_anchor_id_is_unresolvable() {
+        // The desktop's live view is structurally short of the store, so an id
+        // it holds may name no stored row at all. That is not evidence about
+        // where the user clicked — the old code degraded to the timestamp and
+        // cut there anyway.
+        let conv = tool_using_conversation();
+        let t = branched(&conv, Some("never-stored"), Some(104));
+        assert_eq!(t.messages().len(), 15);
+        assert_eq!(
+            t.messages().last().unwrap().as_concat_text(),
+            "answer to q3"
+        );
+    }
+
+    #[test]
+    fn trim_resolves_a_duplicated_anchor_id_to_the_last_match() {
+        // Storage enforces UNIQUE(session_id, msg_uid), but a conversation
+        // assembled in memory can carry a decoder's reused id. `position()`
+        // took the FIRST match, which is the narrowest — and worst — reading.
+        let mut first = Message::assistant().with_text("a1").with_id("dup");
+        first.created = 10;
+        let mut second = Message::assistant().with_text("a2").with_id("dup");
+        second.created = 30;
+        let conv = Conversation::new_unvalidated(vec![
+            umsg(1, "q1"),
+            first,
+            umsg(20, "q2"),
+            second,
+            umsg(40, "q3"),
+            amsg(50, "a3"),
+        ]);
+
+        let t = branched(&conv, Some("dup"), None);
+        assert_eq!(t.messages().len(), 4);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "a2");
+    }
+
+    #[test]
+    fn trim_by_timestamp_alone_cuts_a_prefix_rather_than_filtering() {
+        // `created` is not monotonic in a real chat: a compaction writes its
+        // summary rows with the current time and leaves the `/compact` request
+        // behind them carrying an older one (measured in a real session store).
+        // Filtering every message against the anchor kept the late-but-older row
+        // and dropped nothing before it — a branch with a hole in it.
+        let conv = Conversation::new_unvalidated(vec![
+            umsg(100, "q1"),
+            amsg(101, "a1"),
+            umsg(200, "summary"),
+            amsg(201, "noted"),
+            umsg(150, "/compact"), // stored after, created before
+            amsg(202, "a2"),
+            umsg(300, "q3"),
+            amsg(301, "a3"),
+        ]);
+
+        // Legacy timestamp-only anchor at "noted" (201).
+        let t = branched(&conv, None, Some(201));
+        assert_eq!(t.messages().len(), 4);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "noted");
+        assert!(
+            t.messages()
+                .iter()
+                .all(|m| m.as_concat_text() != "/compact"),
+            "a branch is a prefix; a later row with an older timestamp must not \
+             be spliced in behind the cut"
+        );
+    }
+
+    #[test]
+    fn trim_by_timestamp_before_the_conversation_keeps_nothing() {
+        let conv = Conversation::new_unvalidated(vec![umsg(100, "q1"), amsg(101, "a1")]);
+        assert!(branched(&conv, None, Some(1)).messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn diverge_with_a_stale_anchor_id_keeps_the_conversation_end_to_end() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        for message in tool_using_conversation().messages() {
+            sm.add_message(&session.id, message).await.unwrap();
+        }
+
+        // The desktop clicked Branch on the last answer (created 304) but sent
+        // the first reply's id alongside it.
+        let branch = sm
+            .diverge_session_at(
+                &session.id,
+                None,
+                Some(304),
+                Some("e1-preamble".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(branch.message_count, 15);
+        let conversation = branch.conversation.unwrap();
+        assert_eq!(
+            conversation.messages().last().unwrap().as_concat_text(),
+            "answer to q3"
+        );
+        // And the row must not claim a divergence point the branch was not cut
+        // at: the refused anchor is never recorded.
+        assert_eq!(branch.branch_point_msg_uid.as_deref(), Some("e3-answer"));
+    }
+
+    #[tokio::test]
+    async fn diverge_records_the_anchor_it_actually_honoured() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        for message in tool_using_conversation().messages() {
+            sm.add_message(&session.id, message).await.unwrap();
+        }
+
+        let branch = sm
+            .diverge_session_at(&session.id, None, Some(204), Some("e2-answer".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(branch.message_count, 10);
+        assert_eq!(branch.branch_point_msg_uid.as_deref(), Some("e2-answer"));
+
+        // An unresolvable anchor records the message the branch really ends at.
+        let branch = sm
+            .diverge_session_at(&session.id, None, None, Some("never-stored".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(branch.message_count, 15);
+        assert_eq!(branch.branch_point_msg_uid.as_deref(), Some("e3-answer"));
     }
 
     #[tokio::test]
