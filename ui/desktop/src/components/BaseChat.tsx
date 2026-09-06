@@ -1250,11 +1250,15 @@ function BaseChatContent({
    * routing around the pane would also skip the buffer that already absorbs
    * "the shell has not finished starting". Stable, because MarkdownContent and
    * CodeBlock are both memo'd.
+   *
+   * Returns whether the command is on its way, so the button can say what
+   * actually happened. `false` means the pane's shell has exited and the bytes
+   * would vanish — the one case where "Sent" would be a lie.
    */
   const handleRunInTerminal = useCallback(
-    (command: string) => {
+    (command: string): boolean => {
       setIsTerminalDockOpen(true);
-      runInTerminal(terminalDockKey, command);
+      return runInTerminal(terminalDockKey, command);
     },
     [setIsTerminalDockOpen, terminalDockKey]
   );

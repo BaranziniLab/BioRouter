@@ -53,7 +53,7 @@ interface ProgressiveMessageListProps {
    * surface with no terminal (a saved transcript). Required and nullable so
    * every surface has to answer — see BioRouterMessage's prop of the same name.
    */
-  onRunInTerminal: ((command: string) => void) | null;
+  onRunInTerminal: ((command: string) => boolean) | null;
   /**
    * Live turn state, supplied only by an interactive chat. Read-only replays
    * (SessionHistoryView) omit these, which is what guarantees the trailing

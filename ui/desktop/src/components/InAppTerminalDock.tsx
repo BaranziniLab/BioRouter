@@ -109,6 +109,25 @@ const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13
  */
 const TERMINAL_THEMES_BY_FAMILY = GENERATED_THEMES;
 
+/**
+ * How many Run commands one pane may hold while its shell starts.
+ *
+ * Same bound and same reason as `terminalRunChannel`'s own queue: a click
+ * nobody could serve is not a debt that accumulates.
+ */
+const MAX_PENDING_RUNS = 4;
+
+/**
+ * How long a queued Run waits for the shell to say anything before it is
+ * written anyway.
+ *
+ * Not a guess at how long a shell takes to start — the ordinary path is the
+ * first output chunk, which arrives in milliseconds. This is the answer for a
+ * shell that emits nothing at all, where the alternative is a command the user
+ * was told had been sent and that never runs.
+ */
+const SHELL_READY_FALLBACK_MS = 2_000;
+
 const TerminalPaneView: React.FC<{
   active: boolean;
   open: boolean;
@@ -121,6 +140,11 @@ const TerminalPaneView: React.FC<{
   const fitAddonRef = useRef<FitAddon | null>(null);
   const backendSessionIdRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
+  // Run requests waiting for this pane's shell to be ready to RECEIVE them,
+  // which is later than "the pty exists" — see `deliverRun`.
+  const pendingRunsRef = useRef<string[]>([]);
+  const shellReadyRef = useRef(false);
+  const shellReadyFallbackRef = useRef<number | null>(null);
   const terminalExitedRef = useRef(false);
   const fitEnabledRef = useRef(open && active);
   const focusFrameRef = useRef<number | null>(null);
@@ -155,6 +179,69 @@ const TerminalPaneView: React.FC<{
     window.electron.writeTerminalSession(sessionId, data).catch(() => {});
   }, []);
 
+  /**
+   * Write one queued or live Run command into this pane's shell.
+   *
+   * ⚠ A Run command CANNOT reuse `pendingInputRef`, and that is the whole point
+   * of this second buffer. That one holds BYTES, which means the bracketing
+   * decision has already been made when the command goes into it — and the
+   * moment a Run is buffered is exactly the moment that decision is
+   * unknowable. `modes.bracketedPasteMode` reports what the SHELL asked for
+   * (DECSET 2004), the shell asks by emitting an escape sequence as part of
+   * printing its first prompt, and until that output has been parsed the flag
+   * reads `false` whether or not the shell wants bracketing. Buffering bytes
+   * therefore commits a multi-line block to the un-bracketed form and the
+   * heredoc or `for` loop lands in the line editor a line at a time, each
+   * newline its own Enter.
+   *
+   * So a Run that arrives early is held as a COMMAND and bracketed at the
+   * moment it is written, which `flushPendingRuns` does once the shell has
+   * spoken. Keystrokes have no such problem: they are single characters the
+   * user typed, and go on being buffered by `writeToBackend`.
+   *
+   * Returns whether the pane accepted it. `false` only for a shell that has
+   * exited — a command written there vanishes, and the transcript's button must
+   * not paint that as "Sent".
+   */
+  const deliverRun = useCallback(
+    (command: string): boolean => {
+      if (terminalExitedRef.current) return false;
+      const term = terminalRef.current;
+      if (!term || !backendSessionIdRef.current || !shellReadyRef.current) {
+        // Bounded like the channel's own queue: a click nobody could serve is
+        // not a debt that accumulates.
+        if (pendingRunsRef.current.length >= MAX_PENDING_RUNS) pendingRunsRef.current.shift();
+        pendingRunsRef.current.push(command);
+        return true;
+      }
+      // The `?.` is load-bearing: `modes` is non-optional in the typings but
+      // absent from the test double.
+      writeToBackend(terminalInputForCommand(command, term.modes?.bracketedPasteMode ?? false));
+      // So the user can Ctrl-C it, or answer whatever it asks. A hidden dock's
+      // focus() is a browser no-op; `fitAndFocus` focuses again when it shows.
+      term.focus();
+      return true;
+    },
+    [writeToBackend]
+  );
+
+  /** Write everything `deliverRun` parked, now that the shell can be read. */
+  const flushPendingRuns = useCallback(() => {
+    if (pendingRunsRef.current.length === 0) return;
+    const term = terminalRef.current;
+    if (!term || !backendSessionIdRef.current || terminalExitedRef.current) return;
+    const bracketedPaste = term.modes?.bracketedPasteMode ?? false;
+    for (const command of pendingRunsRef.current.splice(0)) {
+      writeToBackend(terminalInputForCommand(command, bracketedPaste));
+    }
+    term.focus();
+  }, [writeToBackend]);
+
+  // Stable handle for the mount effect below, which must not re-run (and so
+  // tear down the pty) because a callback identity changed.
+  const flushPendingRunsRef = useRef(flushPendingRuns);
+  flushPendingRunsRef.current = flushPendingRuns;
+
   // "Run" on a chat code block lands here (utils/terminalRunChannel.ts).
   //
   // Claimed by the ACTIVE pane only — the one the user can see is the one a
@@ -162,26 +249,11 @@ const TerminalPaneView: React.FC<{
   // onboarding card's chat-less dock does not.
   //
   // It goes through this pane's OWN writeToBackend rather than around it, which
-  // is the whole reason the channel carries a command instead of a session id:
-  // `pendingInputRef` in there already holds input written before the pty has
-  // spawned, so the "dock just opened, shell is still starting" case needs no
-  // second buffer.
+  // is the whole reason the channel carries a command instead of a session id.
   useEffect(() => {
     if (!active) return;
-    return onTerminalRunRequest(dockKey, (command) => {
-      const term = terminalRef.current;
-      // xterm's live report of what the SHELL asked for (DECSET 2004), read at
-      // delivery rather than assumed. The `?.` is load-bearing: `modes` is
-      // non-optional in the typings but absent from the test double, and a
-      // wrong guess here is either six bytes of literal `[200~` in front of the
-      // user's command or a multi-line block executed a line at a time.
-      const bracketedPaste = term?.modes?.bracketedPasteMode ?? false;
-      writeToBackend(terminalInputForCommand(command, bracketedPaste));
-      // So the user can Ctrl-C it, or answer whatever it asks. A hidden dock's
-      // focus() is a browser no-op; `fitAndFocus` focuses again when it shows.
-      term?.focus();
-    });
-  }, [active, dockKey, writeToBackend]);
+    return onTerminalRunRequest(dockKey, deliverRun);
+  }, [active, dockKey, deliverRun]);
 
   const fitAndFocus = useCallback(() => {
     if (focusFrameRef.current !== null) {
@@ -256,13 +328,25 @@ const TerminalPaneView: React.FC<{
 
     const dataDisposer = window.electron.onTerminalData((event) => {
       if (event.sessionId !== backendSessionIdRef.current) return;
-      term.write(event.data);
+      // The callback fires once xterm has PARSED the chunk, which is the
+      // earliest moment `modes.bracketedPasteMode` is an observation rather
+      // than a default: the shell announces DECSET 2004 as part of printing its
+      // first prompt, so the flag is settled exactly here and not before. See
+      // `deliverRun`.
+      term.write(event.data, () => {
+        shellReadyRef.current = true;
+        flushPendingRunsRef.current();
+      });
     });
     const exitDisposer = window.electron.onTerminalExit((event) => {
       if (event.sessionId !== backendSessionIdRef.current) return;
       backendSessionIdRef.current = null;
       terminalExitedRef.current = true;
+      shellReadyRef.current = false;
       pendingInputRef.current = [];
+      // A queued Run has nowhere to go now, and holding it would fire it into
+      // whatever shell this pane starts next.
+      pendingRunsRef.current = [];
       const suffix = event.signal ? ` (${event.signal})` : '';
       term.writeln(
         `\r\n\x1b[90m[terminal exited with code ${event.exitCode ?? 0}${suffix}]\x1b[0m`
@@ -291,6 +375,7 @@ const TerminalPaneView: React.FC<{
       if (!result.success) {
         terminalExitedRef.current = true;
         pendingInputRef.current = [];
+        pendingRunsRef.current = [];
         term.writeln(`\x1b[31mCould not start terminal: ${result.error}\x1b[0m`);
         return;
       }
@@ -299,6 +384,15 @@ const TerminalPaneView: React.FC<{
       pendingInputRef.current.splice(0).forEach((data) => {
         window.electron.writeTerminalSession(result.sessionId, data).catch(() => {});
       });
+      // A shell that says nothing at all would otherwise hold a queued Run for
+      // ever, having already told the user it was sent. Every real login shell
+      // prints a prompt long before this fires; this is the answer for the one
+      // that does not, and it delivers with whatever the mode reads as then.
+      shellReadyFallbackRef.current = window.setTimeout(() => {
+        shellReadyFallbackRef.current = null;
+        shellReadyRef.current = true;
+        flushPendingRunsRef.current();
+      }, SHELL_READY_FALLBACK_MS);
       flushResize();
     };
 
@@ -310,6 +404,12 @@ const TerminalPaneView: React.FC<{
 
     return () => {
       disposed = true;
+      if (shellReadyFallbackRef.current !== null) {
+        window.clearTimeout(shellReadyFallbackRef.current);
+        shellReadyFallbackRef.current = null;
+      }
+      shellReadyRef.current = false;
+      pendingRunsRef.current = [];
       window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       dataDisposer();

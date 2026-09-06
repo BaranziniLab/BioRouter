@@ -213,13 +213,15 @@ console.log('Hello, World!');
     }
 
     it('offers Run on a shell block when the surface can run one', async () => {
-      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       expect(await findRunButton()).toBeInTheDocument();
     });
 
     it('hands the command over on click', async () => {
-      const onRunInTerminal = vi.fn();
+      const onRunInTerminal = vi.fn(() => true);
       render(
         <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
       );
@@ -230,18 +232,41 @@ console.log('Hello, World!');
     });
 
     it('keeps Copy beside it — the old path is not replaced', async () => {
-      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       await findRunButton();
       expect(screen.getByRole('button', { name: /^copy$/i })).toBeInTheDocument();
     });
 
     it('confirms the hand-off, since the terminal may be below the fold', async () => {
-      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       fireEvent.click(await findRunButton());
 
       expect(await screen.findByRole('button', { name: /^sent$/i })).toBeInTheDocument();
+    });
+
+    /**
+     * "Sent" is a claim about what happened, not about what was clicked.
+     *
+     * The pane refuses when its shell has exited — the bytes would go into a
+     * closed pty and vanish — and the button used to answer that with a tick
+     * and the word "Sent" regardless, because the handler returned `void` and
+     * there was nothing to read.
+     */
+    it('does NOT claim "Sent" when the terminal refuses the command', async () => {
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn(() => false)} />
+      );
+
+      fireEvent.click(await findRunButton());
+
+      expect(await screen.findByRole('button', { name: /terminal closed/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^sent$/i })).not.toBeInTheDocument();
     });
 
     it('is ABSENT by default — the eleven other mount sites have no terminal', async () => {
@@ -252,7 +277,12 @@ console.log('Hello, World!');
     });
 
     it('is absent on a non-shell block', async () => {
-      render(<MarkdownContent content={fence('rust', 'fn main() {}')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent
+          content={fence('rust', 'fn main() {}')}
+          onRunInTerminal={vi.fn(() => true)}
+        />
+      );
 
       expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
@@ -266,7 +296,7 @@ console.log('Hello, World!');
       render(
         <MarkdownContent
           content={fence('shell-session', '$ ls\nREADME.md\nsrc')}
-          onRunInTerminal={vi.fn()}
+          onRunInTerminal={vi.fn(() => true)}
         />
       );
 
@@ -275,20 +305,24 @@ console.log('Hello, World!');
     });
 
     it('is present on a plain ```shell block, which is a command', async () => {
-      render(<MarkdownContent content={fence('shell', 'ls -la')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('shell', 'ls -la')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       expect(await findRunButton()).toBeInTheDocument();
     });
 
     it('is absent on an empty shell block', async () => {
-      render(<MarkdownContent content={fence('bash', '   ')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('bash', '   ')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       expect(await screen.findByRole('button', { name: /^copy$/i })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();
     });
 
     it('hands over a multi-line block whole, interior indentation intact', async () => {
-      const onRunInTerminal = vi.fn();
+      const onRunInTerminal = vi.fn(() => true);
       const script = 'for f in *.txt; do\n  echo "$f"\ndone';
       render(<MarkdownContent content={fence('bash', script)} onRunInTerminal={onRunInTerminal} />);
 
@@ -308,7 +342,7 @@ console.log('Hello, World!');
       // assertion is here rather than there because this is where an unstable
       // callback would show itself: a transcript whose blocks are torn down and
       // rebuilt on every streaming frame.
-      const onRunInTerminal = vi.fn();
+      const onRunInTerminal = vi.fn(() => true);
       const { rerender } = render(
         <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={onRunInTerminal} />
       );
@@ -324,7 +358,9 @@ console.log('Hello, World!');
     });
 
     it('still shows the language label and the code itself', async () => {
-      render(<MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn()} />);
+      render(
+        <MarkdownContent content={fence('bash', 'ls -la')} onRunInTerminal={vi.fn(() => true)} />
+      );
 
       await findRunButton();
       expect(screen.getByText('bash')).toBeInTheDocument();

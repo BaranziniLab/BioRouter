@@ -17,7 +17,7 @@ function shellMessage(): Message {
 }
 
 function view(props: {
-  onRunInTerminal: ((command: string) => void) | null;
+  onRunInTerminal: ((command: string) => boolean) | null;
   isStreaming?: boolean;
 }) {
   const message = shellMessage();
@@ -37,7 +37,7 @@ function view(props: {
 
 describe('BioRouterMessage — running a shell block from the transcript', () => {
   it('offers Run on assistant prose when the chat has a terminal', async () => {
-    const onRunInTerminal = vi.fn();
+    const onRunInTerminal = vi.fn(() => true);
     render(view({ onRunInTerminal }));
 
     await userEvent.click(screen.getByRole('button', { name: /^run$/i }));
@@ -58,7 +58,7 @@ describe('BioRouterMessage — running a shell block from the transcript', () =>
     // after `rm -rf /tmp` is the shape of the accident. Copy has always been
     // safe to offer mid-stream because it does not submit anything; Run is not,
     // so it follows onOpenArtifact's precedent and waits for the turn.
-    render(view({ onRunInTerminal: vi.fn(), isStreaming: true }));
+    render(view({ onRunInTerminal: vi.fn(() => true), isStreaming: true }));
 
     expect(screen.getByRole('button', { name: /^copy$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument();

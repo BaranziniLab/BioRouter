@@ -15,6 +15,8 @@ interface FakeTerminal {
   focus: ReturnType<typeof vi.fn>;
 }
 
+type TerminalDataEvent = { sessionId: string; data: string };
+
 /**
  * Every xterm instance the dock has constructed, newest last — one per pane.
  *
@@ -25,6 +27,23 @@ interface FakeTerminal {
  */
 const xtermInstances = vi.hoisted(() => [] as FakeTerminal[]);
 
+/**
+ * Every pane's `onTerminalData` subscriber, so a test can make a shell SPEAK.
+ *
+ * That is not scene-setting: a Run is held until the shell has produced output,
+ * because `modes.bracketedPasteMode` reports what the shell ASKED FOR (DECSET
+ * 2004) and it asks by emitting an escape sequence with its first prompt. A
+ * double whose shell never says anything can only ever exercise the
+ * un-bracketed branch — which is exactly how a multi-line block came to be
+ * delivered a line at a time.
+ */
+const terminalDataHandlers = vi.hoisted(() => [] as Array<(event: TerminalDataEvent) => void>);
+
+/** Every pane's `onTerminalExit` subscriber, so a test can kill a shell. */
+const terminalExitHandlers = vi.hoisted(
+  () => [] as Array<(event: { sessionId: string; exitCode: number }) => void>
+);
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     modes = { bracketedPasteMode: false };
@@ -33,7 +52,10 @@ vi.mock('@xterm/xterm', () => ({
     loadAddon = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     open = vi.fn();
-    write = vi.fn();
+    // The real `write` runs its callback once the chunk has been PARSED, which
+    // is the moment `modes` is settled. Synchronously here is close enough and
+    // deterministic.
+    write = vi.fn((_data: string, callback?: () => void) => callback?.());
     writeln = vi.fn();
     constructor() {
       xtermInstances.push(this as unknown as FakeTerminal);
@@ -48,6 +70,34 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 
+const ESC = String.fromCharCode(0x1b);
+
+/**
+ * The shell prints its prompt — which is when it announces bracketed paste.
+ *
+ * Every test that expects a Run to reach the pty has to call this, and that is
+ * the feature rather than a chore: a queued Run is held until the shell has
+ * spoken, because `modes.bracketedPasteMode` reports what the shell ASKED FOR
+ * (DECSET 2004) and it asks by emitting an escape sequence with its first
+ * prompt. Before that the flag reads `false` whether or not the shell wants
+ * bracketing, and committing to it there is what delivered a heredoc one line
+ * at a time.
+ *
+ * `bracketed` is set on the pane's own xterm BEFORE the output is delivered,
+ * because that is the order the real thing happens in: the escape sequence
+ * arrives inside the chunk, so by the time xterm has parsed it the flag is
+ * already true.
+ */
+function shellPrompt(sessionId: string, bracketed: boolean, paneIndex = 0) {
+  const term = xtermInstances[paneIndex];
+  if (term) term.modes.bracketedPasteMode = bracketed;
+  act(() => {
+    for (const handler of terminalDataHandlers) {
+      handler({ sessionId, data: `${ESC}[?2004h$ ` });
+    }
+  });
+}
+
 const terminalDisposer = vi.fn();
 
 beforeEach(() => {
@@ -56,6 +106,8 @@ beforeEach(() => {
   resetNewTerminalPaneRegistry();
   resetTerminalRunChannelForTests();
   xtermInstances.length = 0;
+  terminalDataHandlers.length = 0;
+  terminalExitHandlers.length = 0;
   let nextSessionId = 0;
   Object.defineProperty(window, 'electron', {
     configurable: true,
@@ -69,8 +121,14 @@ beforeEach(() => {
         success: true,
       })),
       disposeTerminalSession: vi.fn(async () => ({ success: true })),
-      onTerminalData: vi.fn(() => terminalDisposer),
-      onTerminalExit: vi.fn(() => terminalDisposer),
+      onTerminalData: vi.fn((handler: (event: TerminalDataEvent) => void) => {
+        terminalDataHandlers.push(handler);
+        return terminalDisposer;
+      }),
+      onTerminalExit: vi.fn((handler: (event: { sessionId: string; exitCode: number }) => void) => {
+        terminalExitHandlers.push(handler);
+        return terminalDisposer;
+      }),
       resizeTerminalSession: vi.fn(async () => ({ success: true })),
       writeTerminalSession: vi.fn(async () => ({ success: true })),
     },
@@ -196,8 +254,6 @@ describe('InAppTerminalDock', () => {
   // here exactly as it is for Cmd+W above: runInTerminal() is what BaseChat
   // calls, and the only thing between it and a real pty is this pane.
   describe('running a code block from the chat', () => {
-    const ESC = String.fromCharCode(0x1b);
-
     async function renderDock(props: Partial<{ dockKey: string; open: boolean }> = {}) {
       const view = render(
         <InAppTerminalDock
@@ -217,6 +273,7 @@ describe('InAppTerminalDock', () => {
 
     it("writes the command into this dock's shell and SUBMITS it", async () => {
       await renderDock();
+      shellPrompt('pty-1', false);
 
       act(() => runInTerminal('tab-1', 'ls -la'));
 
@@ -227,7 +284,7 @@ describe('InAppTerminalDock', () => {
 
     it('brackets the paste when the SHELL has asked for it', async () => {
       await renderDock();
-      xtermInstances[0].modes.bracketedPasteMode = true;
+      shellPrompt('pty-1', true);
 
       act(() => runInTerminal('tab-1', 'ls -la'));
 
@@ -243,7 +300,7 @@ describe('InAppTerminalDock', () => {
       // Line-by-line, each newline of a heredoc is its own Enter. Bracketed,
       // the whole thing lands in the line editor and the trailing CR runs it.
       await renderDock();
-      xtermInstances[0].modes.bracketedPasteMode = true;
+      shellPrompt('pty-1', true);
 
       act(() => runInTerminal('tab-1', 'cat <<EOF\nhello\nEOF'));
 
@@ -257,6 +314,7 @@ describe('InAppTerminalDock', () => {
 
     it('focuses the terminal, so the user can Ctrl-C what they started', async () => {
       await renderDock();
+      shellPrompt('pty-1', false);
 
       act(() => runInTerminal('tab-1', 'sleep 60'));
 
@@ -288,9 +346,112 @@ describe('InAppTerminalDock', () => {
         />
       );
 
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+      await waitFor(() => expect(xtermInstances.length).toBeGreaterThan(0));
+      shellPrompt('pty-1', false);
+
       await waitFor(() =>
         expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-1', 'ls -la\r')
       );
+    });
+
+    /**
+     * The regression this whole readiness dance exists for.
+     *
+     * The click lands three commits before a pane exists, so the command is
+     * queued; the pane then subscribes and drains the queue from an effect that
+     * runs BEFORE the one that constructs xterm, so at that instant there is no
+     * terminal to ask about bracketed paste and — one layer further out — no
+     * shell yet to have asked for it. Delivering there committed the command to
+     * the un-bracketed form, and a heredoc arrived as three separate Enters.
+     *
+     * A one-line command cannot catch this: `ls -la\r` is byte-identical either
+     * way, which is why every test above it passed while this was broken.
+     */
+    it('brackets a MULTI-LINE block that was clicked before the terminal existed', async () => {
+      const { rerender } = render(
+        <InAppTerminalDock
+          dockKey="tab-1"
+          open={false}
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+        />
+      );
+
+      act(() => runInTerminal('tab-1', 'cat <<EOF\nhello\nEOF'));
+
+      rerender(
+        <InAppTerminalDock
+          dockKey="tab-1"
+          open
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+        />
+      );
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+      await waitFor(() => expect(xtermInstances.length).toBeGreaterThan(0));
+
+      // Nothing may have been written yet: the shell has not spoken, so the
+      // bracketing question has no honest answer.
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+
+      shellPrompt('pty-1', true);
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(
+          'pty-1',
+          `${ESC}[200~cat <<EOF\rhello\rEOF${ESC}[201~\r`
+        )
+      );
+    });
+
+    /**
+     * The narrower window, and the one a queue alone does not close.
+     *
+     * Here the pane exists and its pty has spawned — `deliverRun` could write
+     * this instant — but the SHELL has not printed its prompt yet, so it has
+     * not announced DECSET 2004 and `modes.bracketedPasteMode` still reads
+     * `false` by default rather than by observation. Writing now commits a
+     * multi-line block to the un-bracketed form for a shell that would have
+     * accepted the bracketed one.
+     */
+    it('waits for the shell to speak before deciding how to bracket', async () => {
+      await renderDock();
+
+      act(() => runInTerminal('tab-1', 'cat <<EOF\nhello\nEOF'));
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+
+      shellPrompt('pty-1', true);
+
+      await waitFor(() =>
+        expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(
+          'pty-1',
+          `${ESC}[200~cat <<EOF\rhello\rEOF${ESC}[201~\r`
+        )
+      );
+    });
+
+    /**
+     * A shell that has exited swallows whatever is written to it, and the
+     * transcript's button used to paint that as a tick and the word "Sent".
+     */
+    it('REFUSES a command once the shell has exited, rather than eating it', async () => {
+      await renderDock();
+      shellPrompt('pty-1', false);
+
+      act(() => {
+        for (const handler of terminalExitHandlers) {
+          handler({ sessionId: 'pty-1', exitCode: 0 });
+        }
+      });
+
+      let accepted: boolean | undefined;
+      act(() => {
+        accepted = runInTerminal('tab-1', 'ls -la');
+      });
+
+      expect(accepted).toBe(false);
+      expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
     });
 
     it('lands in the ACTIVE pane, not the first one', async () => {
@@ -300,6 +461,7 @@ describe('InAppTerminalDock', () => {
       await user.click(screen.getByRole('button', { name: /new terminal/i }));
       await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
       await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(2));
+      shellPrompt('pty-2', false, 1);
 
       act(() => runInTerminal('tab-1', 'ls -la'));
 
@@ -460,6 +622,7 @@ describe('InAppTerminalDock', () => {
       await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
       await waitFor(() => expect(xtermInstances.length).toBe(1));
 
+      shellPrompt('pty-1', false);
       act(() => runInTerminal('tab-1', 'ls -la'));
       await waitFor(() =>
         expect(window.electron.writeTerminalSession).toHaveBeenCalledWith('pty-1', 'ls -la\r')

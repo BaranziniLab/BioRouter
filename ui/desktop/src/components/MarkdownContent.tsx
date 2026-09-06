@@ -15,7 +15,7 @@ import {
 } from '../styles/codeTheme';
 import { Button } from './ui/button';
 
-import { Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
+import { AlertTriangle, Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import { normalizeExternalHttpUrl } from '../utils/externalUrl';
 import { runnableCommandFromCodeBlock } from '../utils/shellCommandBlock';
@@ -38,7 +38,7 @@ interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttrib
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
   knownFilePaths?: KnownFilePaths;
-  onRunInTerminal?: (command: string) => void;
+  onRunInTerminal?: (command: string) => boolean;
 }
 
 interface MarkdownContentProps {
@@ -59,7 +59,7 @@ interface MarkdownContentProps {
    * and a fresh closure each render defeats that for every block in the
    * transcript on every streaming frame.
    */
-  onRunInTerminal?: (command: string) => void;
+  onRunInTerminal?: (command: string) => boolean;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -80,10 +80,17 @@ const CodeBlock = memo(function CodeBlock({
    */
   fenceLanguage: string | null;
   children: string;
-  onRunInTerminal?: (command: string) => void;
+  onRunInTerminal?: (command: string) => boolean;
 }) {
   const [copied, setCopied] = useState(false);
-  const [sent, setSent] = useState(false);
+  /**
+   * What the last Run click actually achieved, not merely that one happened.
+   *
+   * `'sent'` is claimed only when the terminal pane accepted the command. It
+   * refuses when its shell has exited, and the bytes then vanish into a closed
+   * pty — a case that used to render as a tick and the word "Sent".
+   */
+  const [runOutcome, setRunOutcome] = useState<'idle' | 'sent' | 'unavailable'>('idle');
   const timeoutRef = useRef<number | null>(null);
   const sentTimeoutRef = useRef<number | null>(null);
 
@@ -109,10 +116,9 @@ const CodeBlock = memo(function CodeBlock({
 
   const handleRun = () => {
     if (!runnableCommand || !onRunInTerminal) return;
-    onRunInTerminal(runnableCommand);
-    setSent(true);
+    setRunOutcome(onRunInTerminal(runnableCommand) ? 'sent' : 'unavailable');
     if (sentTimeoutRef.current) window.clearTimeout(sentTimeoutRef.current);
-    sentTimeoutRef.current = window.setTimeout(() => setSent(false), 2000);
+    sentTimeoutRef.current = window.setTimeout(() => setRunOutcome('idle'), 2000);
   };
 
   useEffect(() => {
@@ -187,8 +193,20 @@ const CodeBlock = memo(function CodeBlock({
               className="gap-1 text-[11px] text-text-muted hover:text-text-default"
               title="Run in the terminal below"
             >
-              {sent ? <Check className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-              <span>{sent ? 'Sent' : 'Run'}</span>
+              {runOutcome === 'sent' ? (
+                <Check className="h-3 w-3" />
+              ) : runOutcome === 'unavailable' ? (
+                <AlertTriangle className="h-3 w-3" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              <span>
+                {runOutcome === 'sent'
+                  ? 'Sent'
+                  : runOutcome === 'unavailable'
+                    ? 'Terminal closed'
+                    : 'Run'}
+              </span>
             </Button>
           )}
           <Button

@@ -35,7 +35,12 @@ export const PENDING_RUN_TTL_MS = 20_000;
 /** How many queued requests one dock key may hold. */
 const MAX_PENDING_PER_KEY = 4;
 
-export type TerminalRunHandler = (command: string) => void;
+/**
+ * Deliver `command` to a pane's shell. Returns whether the pane ACCEPTED it —
+ * `false` means it can never run there (the shell has exited), which is the one
+ * answer the transcript's Run button must not paint as "Sent".
+ */
+export type TerminalRunHandler = (command: string) => boolean;
 
 type PendingRun = { command: string; queuedAt: number };
 
@@ -58,21 +63,26 @@ function fresh(entries: PendingRun[], now: number): PendingRun[] {
  * Queued requests EXPIRE. A command that never found a pane is not a command
  * waiting to be delivered — it is one the user watched fail to run, and firing
  * it into a terminal they open ten minutes later would be an ambush.
+ *
+ * Returns whether the command is on its way. A live pane answers for itself; a
+ * queued one is reported as accepted, because the ordinary case for queueing is
+ * a dock that the same click is opening. A pane that REFUSES — its shell has
+ * exited — is not re-queued for the next pane, for the ambush reason above.
  */
-export function runInTerminal(dockKey: string, command: string): void {
+export function runInTerminal(dockKey: string, command: string): boolean {
   const listeners = handlers.get(dockKey);
   // Newest listener wins: when panes switch, the arriving pane registers before
   // the departing one's cleanup runs, and the arriving one is the visible pane.
   const listener = listeners?.[listeners.length - 1];
   if (listener) {
-    listener(command);
-    return;
+    return listener(command);
   }
   const now = Date.now();
   const queue = fresh(pending.get(dockKey) ?? [], now);
   queue.push({ command, queuedAt: now });
   while (queue.length > MAX_PENDING_PER_KEY) queue.shift();
   pending.set(dockKey, queue);
+  return true;
 }
 
 /**

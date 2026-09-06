@@ -64,7 +64,7 @@ interface BioRouterMessageProps {
    * live chat lose the wiring in a refactor and look exactly like one of the
    * surfaces that never had it.
    */
-  onRunInTerminal: ((command: string) => void) | null;
+  onRunInTerminal: ((command: string) => boolean) | null;
 }
 
 export default function BioRouterMessage({
