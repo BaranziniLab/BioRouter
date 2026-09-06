@@ -265,6 +265,45 @@ pub struct Filed {
     pub filer: Filer,
 }
 
+/// Is this process a test binary?
+///
+/// ⚠ `cfg!(test)` alone is NOT the answer, and the comment that used to say the
+/// compiler enforced this was wrong in the direction that matters. `cfg(test)`
+/// is set only while the crate under compilation is built with `--test`, so it
+/// is true for this crate's unit tests and **false** inside every integration
+/// test — `crates/biorouter/tests/*.rs` link the library compiled normally.
+/// `bug_report_agent_loop` is exactly such a test, it drives a real
+/// `Agent::reply` at this tool, and the only thing standing between it and a
+/// live `gh issue create` was that it happens to DENY the approval card. The
+/// privileged `DecisionAuthority` constructors it would need to approve one are
+/// `pub`, so an integration test added tomorrow needs no unsafe, no new
+/// dependency and no ill intent to file a real issue on the project's tracker.
+///
+/// The second half is a runtime check, and deliberately a structural one rather
+/// than an env var a test would have to remember to set — a guard that depends
+/// on being armed is exactly the guard the next test forgets. Cargo builds and
+/// runs every test binary out of `<target>/<profile>/deps/`, unit and
+/// integration alike, and no shipped binary lives there: the desktop app stages
+/// its backends under `Contents/Resources/bin`, the deb/rpm install to
+/// `/usr/bin`, and a dev run is `target/debug/biorouter`. Benchmarks are also
+/// caught, which is correct — they must not file issues either.
+///
+/// Fails SAFE in both directions. A false negative is impossible for the case
+/// that matters (a test binary is always under `deps/`), and a false positive
+/// costs nothing worse than a fallback: [`super::post_report`] answers a
+/// `file_with_gh` error with the prefilled compose URL, so the user still gets
+/// their report.
+fn running_under_test() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    std::env::current_exe().is_ok_and(|exe| {
+        exe.parent()
+            .and_then(Path::file_name)
+            .is_some_and(|dir| dir == "deps")
+    })
+}
+
 /// Create the issue with the user's own `gh`.
 ///
 /// The body goes through a file rather than an argument: an issue body is tens
@@ -279,10 +318,10 @@ pub async fn file_with_gh(
     // ⚠ A test that approved the card would create a real, public, permanent
     // issue on someone's tracker — from `cargo test`, on whatever machine
     // happened to have `gh` signed in. No test does today; this makes that a
-    // property of the code rather than of everyone who ever adds one. The
-    // compiler enforces it, and the fallback path the caller takes on an error
-    // is exercised by the same refusal.
-    if cfg!(test) {
+    // property of the code rather than of everyone who ever adds one, and the
+    // fallback path the caller takes on an error is exercised by the same
+    // refusal.
+    if running_under_test() {
         anyhow::bail!("refusing to create a GitHub issue from a test build; nothing was posted");
     }
     tokio::fs::write(body_file, body).await?;

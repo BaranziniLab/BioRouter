@@ -10,7 +10,10 @@
 //! text exists; this proves the call arrives.
 //!
 //! ⚠ It also cannot post. Nothing here approves the card, and
-//! `issue::file_with_gh` refuses outright under `cfg!(test)` besides.
+//! `issue::file_with_gh` refuses outright from a test binary besides — a
+//! property this file now ASSERTS rather than assumes, because the guard it
+//! used to name (`cfg!(test)`) does not hold here at all. See
+//! `filing_is_refused_from_an_integration_test_binary` at the bottom.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -362,7 +365,7 @@ async fn card_is_yielded(cancel_token: Option<CancellationToken>) {
 
     // Answer the card as soon as it is parked, so the turn terminates. DENY:
     // nothing in this suite may create a real issue, and `issue::file_with_gh`
-    // refuses under `cfg!(test)` besides.
+    // refuses from a test binary besides.
     let denier = tokio::spawn({
         let session_id = session_id.clone();
         async move {
@@ -593,5 +596,42 @@ async fn the_card_reaches_the_stream_while_the_tool_is_still_parked() {
     assert!(
         denier.await.unwrap(),
         "the card never reached the reply stream at all"
+    );
+}
+
+/// The belt to the denial's braces, and the reason it had to be rewritten.
+///
+/// `cfg(test)` is set only while the crate under compilation is built with
+/// `--test`. This file links `biorouter` compiled NORMALLY, so `cfg!(test)` is
+/// **false** here — the guard that three comments and a commit message credited
+/// with making a test-time `gh issue create` impossible was, in this binary,
+/// not present at all. What kept this suite honest was that it denies the card,
+/// and the privileged `DecisionAuthority` constructors an approving test would
+/// reach for are `pub`.
+///
+/// So the guard is a runtime check now, and this asserts it from the side
+/// `cfg!(test)` cannot see. A failure here means a test that approves the card
+/// would file a real, public, permanent issue on someone's tracker.
+#[tokio::test]
+async fn filing_is_refused_from_an_integration_test_binary() {
+    let body_file = std::env::temp_dir().join("biorouter-bug-report-guard-probe.md");
+    let error = biorouter::agents::bug_report::issue::file_with_gh(
+        "BaranziniLab/biorouter",
+        "a title nobody should ever see on the tracker",
+        "a body nobody should ever see on the tracker",
+        &body_file,
+    )
+    .await
+    .expect_err("a test binary must never reach `gh issue create`");
+
+    assert!(
+        error.to_string().contains("refusing to create a GitHub issue"),
+        "the refusal did not fire; this binary can file real issues: {error}"
+    );
+    // It bails before writing, so there is nothing to clean up — asserted, so a
+    // later edit that moves the guard below the write is noticed.
+    assert!(
+        !body_file.exists(),
+        "the guard ran after the body was written to disk"
     );
 }
