@@ -115,6 +115,37 @@ static PATTERNS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
             "bearer token",
             compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}"),
         ),
+        // `Authorization: Basic dXNlcjpwYXNzd29yZA==` — HTTP's other credential
+        // header, and the one shape that slipped through BOTH halves of this
+        // harness. The `bearer token` rule above does not match it, and the
+        // generic assignment rule below cannot: its value group needs six
+        // characters and
+        // `Basic` is five, so the match dies on the scheme word and never
+        // reaches the base64 behind it. Scrub and validator agreed, and were
+        // both wrong — which is precisely the failure the two-shape design
+        // exists to prevent and cannot, when the gap is a shape neither knows.
+        //
+        // Anchored on the header name rather than on a bare `Basic`, on
+        // purpose: `(?i)basic\s+\w{8,}` also matches "basic understanding",
+        // and a false positive here is not cosmetic — `validate_issue` REFUSES
+        // a report on anything the rescrub still finds, so it would reject a
+        // bug report for containing ordinary English.
+        (
+            "basic auth",
+            compile(r"(?i)\b((?:proxy-)?authorization\s*[=:]\s*basic)\s+[A-Za-z0-9+/=_-]{8,}"),
+        ),
+        // `curl -u alice:hunter2` / `--user=alice:hunter2` — the same credential
+        // one layer earlier, in the command a user pastes into a bug report to
+        // show what they ran. Not covered by `url credential`, which needs a
+        // `scheme://`, and not by the assignment rule, which needs a keyword.
+        //
+        // The `\bcurl\b[^\n]*?` prefix is load-bearing and stays on ONE line:
+        // a bare `-u user:pass` rule would redact `docker run -u 1000:1000` and
+        // `id -u`, and a false positive is a refused report (see above).
+        (
+            "command-line credential",
+            compile(r#"(?i)(\bcurl\b[^\n]*?\s--?u(?:ser)?[=\s])[^\s'"]+:[^\s'"]+"#),
+        ),
         // A credential-shaped assignment in prose, a URL query, an env dump or a
         // YAML line. The needle set matches `diagnostics::is_secret_key` on
         // purpose: two redactors disagreeing about what a credential is means
@@ -198,6 +229,15 @@ pub fn scrub(text: &str, home: Option<&Path>) -> Scrubbed {
                     // cannot name the setting it is about is useless.
                     "credential assignment" => format!("{}={SECRET_PLACEHOLDER}", &caps[1]),
                     "url credential" => format!("{}{SECRET_PLACEHOLDER}@", &caps[1]),
+                    // Keep the header/flag, drop the value — same reason as
+                    // `credential assignment`: a report that cannot say WHICH
+                    // request was rejected is not a report. Both replacements
+                    // are also idempotent, which matters more than it looks:
+                    // `validate_issue` re-runs this scrub and refuses anything
+                    // it still finds, so a rewrite that re-matched its own
+                    // output would refuse every report it had just cleaned.
+                    "basic auth" => format!("{} {SECRET_PLACEHOLDER}", &caps[1]),
+                    "command-line credential" => format!("{}{SECRET_PLACEHOLDER}", &caps[1]),
                     _ => SECRET_PLACEHOLDER.to_string(),
                 }
             })
@@ -395,6 +435,87 @@ mod tests {
         );
         assert!(scrubbed.text.contains("GITHUB_TOKEN"), "{scrubbed:?}");
         assert!(!scrubbed.text.contains("supersecret"), "{scrubbed:?}");
+    }
+
+    /// The shape that slipped through BOTH halves: neither the bearer rule nor
+    /// the assignment rule can reach the base64 behind `Basic`.
+    #[test]
+    fn basic_auth_credentials_are_redacted_and_the_header_survives() {
+        let secret = "dXNlcjpodW50ZXIyc3VwZXJzZWNyZXQ=";
+        for line in [
+            format!("Authorization: Basic {secret}"),
+            format!("authorization:basic {secret}"),
+            format!("Proxy-Authorization: Basic {secret}"),
+            format!("-H 'Authorization: Basic {secret}'"),
+        ] {
+            let scrubbed = scrub(&line, None);
+            assert!(!scrubbed.text.contains(secret), "`{line}` survived: {scrubbed:?}");
+            assert!(
+                scrubbed.text.to_ascii_lowercase().contains("basic"),
+                "the header names WHICH request was rejected: {scrubbed:?}"
+            );
+        }
+    }
+
+    /// A false positive here is not cosmetic: `validate_issue` refuses a report
+    /// on anything the rescrub still finds, so an over-eager `Basic` rule would
+    /// reject a bug report for containing ordinary English.
+    #[test]
+    fn ordinary_prose_about_basics_is_left_alone() {
+        for line in [
+            "a basic understanding of the graph schema",
+            "Basic authentication is not configured",
+            "the basic dashboard renders blank",
+        ] {
+            let scrubbed = scrub(line, None);
+            assert_eq!(scrubbed.text, line, "prose was rewritten: {scrubbed:?}");
+        }
+    }
+
+    /// `curl -u user:pass` — the same credential one layer earlier, in the
+    /// command a user pastes in to show what they ran.
+    #[test]
+    fn a_curl_user_flag_loses_its_credential_and_keeps_its_flag() {
+        for line in [
+            "curl -u alice:hunter2 https://api.example.org/v1",
+            "curl --user=alice:hunter2 https://api.example.org/v1",
+            "curl -sS -H 'Accept: application/json' -u alice:hunter2 https://x.example",
+        ] {
+            let scrubbed = scrub(line, None);
+            assert!(!scrubbed.text.contains("hunter2"), "`{line}` survived: {scrubbed:?}");
+            assert!(!scrubbed.text.contains("alice"), "the username identifies a person too: {scrubbed:?}");
+            assert!(scrubbed.text.contains("curl"), "{scrubbed:?}");
+        }
+    }
+
+    /// The `\bcurl\b` prefix is what keeps this rule off every other `-u`.
+    #[test]
+    fn a_uid_gid_pair_is_not_a_credential() {
+        for line in [
+            "docker run -u 1000:1000 biorouter/ci",
+            "id -u",
+            "sort -u results.tsv",
+        ] {
+            let scrubbed = scrub(line, None);
+            assert_eq!(scrubbed.text, line, "a non-credential was rewritten: {scrubbed:?}");
+        }
+    }
+
+    /// `validate_issue` re-runs the scrub and refuses anything it still finds,
+    /// so a rewrite that re-matched its own output would refuse every report it
+    /// had just cleaned.
+    #[test]
+    fn the_new_replacements_do_not_match_their_own_output() {
+        let once = scrub(
+            "Authorization: Basic dXNlcjpodW50ZXIy and curl -u alice:hunter2 https://x.example",
+            None,
+        );
+        assert!(once.changed());
+        let twice = scrub(&once.text, None);
+        assert!(
+            twice.findings.is_empty(),
+            "the second pass found something, so validate_issue would refuse: {twice:?}"
+        );
     }
 
     /// Ordering: the vendor pattern must win, so the receipt names the right
