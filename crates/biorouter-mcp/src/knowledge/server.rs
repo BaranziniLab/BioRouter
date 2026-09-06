@@ -541,7 +541,15 @@ pub struct DeletedBase {
     pub name: String,
     /// Curated knowledge pages the base held. The number the approval card
     /// showed the user, so the model's summary and the card cannot disagree.
-    pub pages_removed: usize,
+    ///
+    /// ⚠ `Option`, and `None` when the page tree could not be walked — which is
+    /// the only shape that keeps the sentence above true. The card
+    /// (`security::knowledge_delete::describe_base`) already fails soft in that
+    /// direction and says "its knowledge pages"; reporting `0` here made the
+    /// model tell the user "0 knowledge pages removed" about a base whose
+    /// contents were simply unreadable. "0 pages" reads as "nothing was lost",
+    /// which is the one wrong thing either surface could say.
+    pub pages_removed: Option<usize>,
     /// Always `true` — the tool errors rather than reporting a partial delete;
     /// `delete_base_under_locks` rolls its metadata back if any step fails.
     pub deleted: bool,
@@ -1252,9 +1260,11 @@ impl KnowledgeServer {
         let name = crate::knowledge::manifest::load(&kb_root)
             .map(|m| m.name)
             .unwrap_or_else(|_| kb_id.clone());
+        // `.ok()`, never `.unwrap_or(0)`: see `DeletedBase::pages_removed`. An
+        // unreadable tree is an unknown count, not an empty base.
         let pages_removed = crate::knowledge::store::list_pages(&kb_root, None)
-            .map(|pages| pages.len())
-            .unwrap_or(0);
+            .ok()
+            .map(|pages| pages.len());
 
         // The service owns the transaction: staged rename, registry unregister,
         // machine primary, per-session primaries, both hidden sets and the tier
@@ -4162,6 +4172,52 @@ mod tests {
     }
 
     // ── kb_delete_base ───────────────────────────────────────────────────────
+
+    /// An unreadable page tree is an UNKNOWN count, never zero.
+    ///
+    /// The approval card already fails soft this way — `describe_base` hands
+    /// `deletion_card` an `Option` and it says "its knowledge pages" when the
+    /// walk fails — and the summary is documented as the same number the card
+    /// showed. `unwrap_or(0)` broke that agreement in the one direction that
+    /// matters: the model then tells the user "0 knowledge pages removed" about
+    /// a base whose contents were merely unreadable, and "0 pages" reads as
+    /// "nothing was lost".
+    ///
+    /// The `knowledge/` symlink is how the walk is made to fail without making
+    /// the delete fail: `list_pages` refuses a path that escapes the base
+    /// (`ensure_existing_path_confined`), while the staged rename and the
+    /// removal that follow it only ever touch the link, not its target.
+    #[tokio::test]
+    async fn an_unreadable_page_tree_reports_an_unknown_count_not_zero() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["scratch"]);
+        let outside = root.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let knowledge = root.join("scratch").join("knowledge");
+        if knowledge.exists() {
+            std::fs::remove_dir_all(&knowledge).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, &knowledge).unwrap();
+        assert!(
+            crate::knowledge::store::list_pages(&root.join("scratch"), None).is_err(),
+            "the fixture must actually make the walk fail, or this proves nothing"
+        );
+
+        let out = call_tool_as(
+            &srv,
+            "kb_delete_base",
+            serde_json::json!({ "kb_id": "scratch" }),
+            Private,
+        )
+        .await;
+        let summary = json_of(&out);
+        assert_eq!(summary["deleted"], true, "{summary}");
+        assert!(
+            summary["pages_removed"].is_null(),
+            "an unreadable tree is an unknown count, and `0` reads as \"nothing was \
+             lost\": {summary}"
+        );
+    }
 
     /// The whole transaction, from the model's seam.
     ///
