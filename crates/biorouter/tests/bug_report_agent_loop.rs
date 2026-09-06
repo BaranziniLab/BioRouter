@@ -615,6 +615,9 @@ async fn the_card_reaches_the_stream_while_the_tool_is_still_parked() {
 #[tokio::test]
 async fn filing_is_refused_from_an_integration_test_binary() {
     let body_file = std::env::temp_dir().join("biorouter-bug-report-guard-probe.md");
+    // A previous run under a REGRESSED guard would have left this behind, and a
+    // stale file would then fail the assertion below after the guard was fixed.
+    let _ = std::fs::remove_file(&body_file);
     let error = biorouter::agents::bug_report::issue::file_with_gh(
         "BaranziniLab/biorouter",
         "a title nobody should ever see on the tracker",
