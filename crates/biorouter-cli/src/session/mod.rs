@@ -1043,7 +1043,40 @@ impl CliSession {
                 "{}",
                 console::style(format!("Saved workflow to {}", path.display())).green()
             ),
-            Err(e) => println!("{}", console::style(e).red()),
+            // ⚠ Print the CHAIN and then the draft. `service::save` wraps the
+            // validation failure in "refusing to save a workflow that does not
+            // validate", and `anyhow`'s `Display` prints only that outermost
+            // context — so the user was told the workflow was invalid and never
+            // which field, while the only copy of a document that cost a whole
+            // model round-trip went out of scope on the next line. Two losses
+            // from one arm: the reason, and the work.
+            Err(e) => {
+                println!(
+                    "{}",
+                    console::style(format!("Could not save the workflow: {e}")).red()
+                );
+                for cause in e.chain().skip(1) {
+                    println!("{}", console::style(format!("  caused by: {cause}")).red());
+                }
+                match workflow.to_yaml() {
+                    Ok(yaml) => println!(
+                        "{}\n{yaml}",
+                        console::style(
+                            "Nothing was written. Here is the generated workflow so it is not \
+                             lost — fix the problem above and save it yourself:"
+                        )
+                        .yellow()
+                    ),
+                    Err(render) => println!(
+                        "{}",
+                        console::style(format!(
+                            "Nothing was written, and the draft could not be rendered \
+                             either: {render}"
+                        ))
+                        .red()
+                    ),
+                }
+            }
         }
     }
 
