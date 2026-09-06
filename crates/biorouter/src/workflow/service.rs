@@ -185,14 +185,19 @@ pub fn invalidate() {
 }
 
 fn rebuild_locked(guard: &mut Option<Catalog>) -> Result<()> {
+    // ⚠ Fingerprint FIRST, scan second. Taken afterwards it would record the
+    // mtime of a tree that changed *during* the scan, and the entry that
+    // resulted — a fresh-looking stamp over a map missing whatever landed
+    // mid-walk — would then satisfy every staleness check until something else
+    // touched the same root. Stamping before means such a change leaves the
+    // fingerprint OLD, so the next call rebuilds. The failure directions are
+    // not symmetric: one rescans a directory, the other hides a workflow.
+    let roots = root_fingerprint();
     let by_id = list_manifests()?
         .into_iter()
         .map(|manifest| (manifest.id, manifest.file_path))
         .collect();
-    *guard = Some(Catalog {
-        roots: root_fingerprint(),
-        by_id,
-    });
+    *guard = Some(Catalog { roots, by_id });
     Ok(())
 }
 
@@ -201,6 +206,16 @@ fn rebuild_locked(guard: &mut Option<Catalog>) -> Result<()> {
 /// A hit whose file has since disappeared is treated as a miss and forces one
 /// rebuild, so a deleted or renamed workflow reports "not found" rather than
 /// handing a mutating caller a path to nothing.
+///
+/// ⚠ A MISS forces one rebuild too, and for the mirror-image reason. mtime has
+/// one-second granularity, so a workflow written by another process inside the
+/// same second as the cached fingerprint leaves the entry looking fresh while
+/// the map has never seen the file — and "not found" from a cache is
+/// indistinguishable from "not found" in the tree. The hit path already paid a
+/// rescan to avoid answering from a stale snapshot; answering a NEGATIVE from
+/// one is the same mistake with a worse symptom, because it names a workflow
+/// that does exist as one that does not. The cost is a directory walk on a
+/// query that was going to fail anyway.
 pub fn resolve_id(id: &str) -> Result<PathBuf> {
     let mut guard = catalog()
         .lock()
@@ -209,18 +224,21 @@ pub fn resolve_id(id: &str) -> Result<PathBuf> {
     let fresh = guard
         .as_ref()
         .is_some_and(|cached| cached.roots == root_fingerprint());
+    let mut rebuilt = false;
     if !fresh {
         rebuild_locked(&mut guard)?;
+        rebuilt = true;
     }
 
-    if let Some(path) = guard.as_ref().and_then(|c| c.by_id.get(id)).cloned() {
-        if path.exists() {
-            return Ok(path);
-        }
+    match guard.as_ref().and_then(|c| c.by_id.get(id)).cloned() {
         // A cached path that no longer resolves: rebuild once and answer from
         // the rebuilt map, so the caller sees today's tree rather than the
         // snapshot's.
-        rebuild_locked(&mut guard)?;
+        Some(path) if path.exists() => return Ok(path),
+        Some(_) if !rebuilt => rebuild_locked(&mut guard)?,
+        Some(_) => {}
+        None if !rebuilt => rebuild_locked(&mut guard)?,
+        None => {}
     }
 
     match guard.as_ref().and_then(|c| c.by_id.get(id)) {
@@ -412,7 +430,9 @@ pub async fn session_enrichment(
 ///
 /// ⚠ The ONLY enrichment. A route, a CLI command or a tool that sets
 /// `workflow.extensions` itself is the divergence this module exists to remove —
-/// `enrichment_is_applied_in_exactly_one_place` greps for exactly that.
+/// `only_the_core_writes_a_generated_workflows_extensions` greps for exactly
+/// that. (It was cited here under a name no test has ever had, which is the
+/// failure mode of naming a guard in prose: the citation looks like evidence.)
 pub fn apply_session_enrichment(workflow: &mut Workflow, enrichment: SessionEnrichment) {
     if !enrichment.extensions.is_empty() {
         workflow.extensions = Some(enrichment.extensions);
@@ -761,6 +781,52 @@ mod tests {
         assert!(err.to_string().contains("not found"), "{err}");
         invalidate();
     }
+
+    /// A MISS forces one rescan, exactly as a dead hit does.
+    ///
+    /// mtime has one-second granularity, so a workflow written by another
+    /// process inside the same second as the cached fingerprint leaves the
+    /// entry looking fresh while the map has never seen the file — and the
+    /// caller is told "Workflow not found" about a workflow that exists. The
+    /// hit path already paid a rescan to avoid answering from a stale snapshot;
+    /// answering a NEGATIVE from one is the same mistake with a worse symptom.
+    ///
+    /// Asserted through the catalog rather than through a file, because the
+    /// roots are the user's real library plus `BIOROUTER_WORKFLOW_PATH` and
+    /// mutating that env var in a parallel test binary is a race, not a test.
+    /// The sentinel is an id no scan can ever produce, so its disappearance is
+    /// proof that the map was rebuilt and not merely consulted.
+    #[test]
+    fn a_miss_against_a_fresh_looking_catalog_still_rescans() {
+        const SENTINEL: &str = "sentinel-no-scan-can-mint-this";
+        {
+            let mut guard = catalog().lock().unwrap();
+            *guard = Some(Catalog {
+                // Matching the live fingerprint is the whole point: the
+                // freshness check must pass, so the only thing that can rebuild
+                // is the miss itself.
+                roots: root_fingerprint(),
+                by_id: HashMap::from([(
+                    SENTINEL.to_string(),
+                    PathBuf::from("/definitely/not/here.yaml"),
+                )]),
+            });
+        }
+
+        let _ = resolve_id("an-id-that-is-in-no-library");
+
+        let survived = catalog()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|cached| cached.by_id.contains_key(SENTINEL));
+        invalidate();
+        assert!(
+            !survived,
+            "the catalog was not rebuilt, so a workflow written inside mtime's one-second \
+             window would report as missing until something else touched the root"
+        );
+    }
 }
 
 // The knowledge-capture tests moved down here with the function they cover.
@@ -975,6 +1041,42 @@ mod one_core_guards {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/")
+    }
+
+    /// The catalog's freshness stamp is taken BEFORE the scan it describes.
+    ///
+    /// Taken after, it records the mtime of a tree that changed *during* the
+    /// walk: a fresh-looking stamp over a map missing whatever landed mid-scan,
+    /// which then satisfies every staleness check until something else touches
+    /// the same root. Stamped first, such a change leaves the fingerprint old
+    /// and the next call rebuilds. The two failure directions are not
+    /// symmetric — one rescans a directory, the other hides a workflow — so the
+    /// order is the fix and cannot be tested from the outside without racing a
+    /// real filesystem against a real scan.
+    #[test]
+    fn the_catalog_fingerprint_is_taken_before_the_scan() {
+        let text = std::fs::read_to_string(crates_dir().join("biorouter/src/workflow/service.rs"))
+            .expect("service.rs is readable");
+        let body = production(&text);
+        let rebuild = body
+            .split_once("fn rebuild_locked")
+            .expect("rebuild_locked exists")
+            .1;
+        let rebuild = rebuild
+            .split_once("\n}\n")
+            .map_or(rebuild, |(inside, _)| inside);
+
+        let stamp = rebuild
+            .find("root_fingerprint()")
+            .expect("rebuild_locked must take a fingerprint");
+        let scan = rebuild
+            .find("list_manifests()")
+            .expect("rebuild_locked must scan for manifests");
+        assert!(
+            stamp < scan,
+            "`root_fingerprint()` must be called before `list_manifests()`, or the cache \
+             records a stamp newer than the map it stamps. Body seen:\n{rebuild}"
+        );
     }
 
     /// A generated workflow's `extensions` are written in ONE place.
