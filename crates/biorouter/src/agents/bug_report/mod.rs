@@ -1225,6 +1225,64 @@ mod tests {
         assert!(!body.contains("Filed:"), "{body}");
     }
 
+    /// The file half's approval card, or a panic that says WHY none came.
+    ///
+    /// ⚠ Every test here spawns `handle_report_bug` and then polls the pending
+    /// registry, never looking at the task — so an early return (a privacy
+    /// refusal, a store read that failed, an invalid-params exit) is
+    /// indistinguishable from silence, and a remote runner reports
+    /// `Elapsed(())` for both. That ambiguity cost three windows-latest runs
+    /// and two wrong diagnoses on
+    /// `the_approval_card_shows_the_exact_body_and_the_destination`. On a
+    /// timeout this asks the handler what it actually did.
+    ///
+    /// ⚠ That test keeps its own inlined copy of this for now, deliberately:
+    /// it is being iterated against live Windows evidence, and converging the
+    /// two while that is in flight would fight an edit rather than help it.
+    /// Fold it in once the Windows run is green.
+    ///
+    /// Hands the join handle back, so the caller can still resolve the card and
+    /// read the tool's own result.
+    async fn approval_card(
+        session_id: &str,
+        running: tokio::task::JoinHandle<ToolResult<Vec<Content>>>,
+    ) -> (
+        crate::conversation::message::ActionRequiredData,
+        tokio::task::JoinHandle<ToolResult<Vec<Content>>>,
+    ) {
+        let registry = PendingUserActions::global();
+        let found = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(message) = registry
+                    .pending_cards_for_session(session_id)
+                    .into_iter()
+                    .next()
+                {
+                    if let Some(MessageContent::ActionRequired(action)) =
+                        message.content.into_iter().next()
+                    {
+                        return action.data;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        match found {
+            Ok(data) => (data, running),
+            Err(_) => {
+                let outcome = tokio::time::timeout(Duration::from_secs(5), running).await;
+                panic!(
+                    "the file half must raise an approval card; none arrived within 10s.\n\
+                     The handler's own outcome was: {outcome:#?}\n\
+                     (an Ok(..) here means it RETURNED instead of parking — read its text; \
+                     a timeout here means it is genuinely still running.)"
+                );
+            }
+        }
+    }
+
     /// The card must show the WHOLE body, not the first four thousand
     /// characters of it.
     ///
@@ -1252,38 +1310,21 @@ mod tests {
             async move { handle_report_bug(arguments, &session, manager, None).await }
         });
 
-        let registry = PendingUserActions::global();
-        let (id, preview, body) = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let Some(message) = registry
-                    .pending_cards_for_session(&session_id)
-                    .into_iter()
-                    .next()
-                {
-                    if let Some(MessageContent::ActionRequired(action)) =
-                        message.content.into_iter().next()
-                    {
-                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
-                            id,
-                            preview,
-                            arguments,
-                            ..
-                        } = action.data
-                        {
-                            let body = arguments
-                                .get("body")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            return (id, preview, body);
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the file half must raise an approval card");
+        let (card, running) = approval_card(&session_id, running).await;
+        let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+            id,
+            preview,
+            arguments,
+            ..
+        } = card
+        else {
+            panic!("the parked card must be a tool confirmation: {card:?}");
+        };
+        let body = arguments
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
 
         assert!(
             body.chars().count() > 4_000,
@@ -1305,6 +1346,7 @@ mod tests {
             "the END of the body never reached the card, so it was approved unseen"
         );
 
+        let registry = PendingUserActions::global();
         registry.resolve_in_session(
             &session_id,
             &id,
@@ -1350,36 +1392,21 @@ mod tests {
             async move { handle_report_bug(arguments, &session, manager, None).await }
         });
 
-        let registry = PendingUserActions::global();
-        let (id, prompt) = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let Some(message) = registry
-                    .pending_cards_for_session(&session_id)
-                    .into_iter()
-                    .next()
-                {
-                    if let Some(MessageContent::ActionRequired(action)) =
-                        message.content.into_iter().next()
-                    {
-                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
-                            id, prompt, ..
-                        } = action.data
-                        {
-                            return (id, prompt.unwrap_or_default());
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the file half must raise an approval card");
+        let (card, running) = approval_card(&session_id, running).await;
+        let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+            id, prompt, ..
+        } = card
+        else {
+            panic!("the parked card must be a tool confirmation: {card:?}");
+        };
+        let prompt = prompt.unwrap_or_default();
 
         assert!(
             prompt.contains("YOUR last message"),
             "the card must say the description is quoted from the user: {prompt}"
         );
 
+        let registry = PendingUserActions::global();
         registry.resolve_in_session(
             &session_id,
             &id,
@@ -1405,36 +1432,21 @@ mod tests {
             async move { handle_report_bug(file_args(), &session, manager, None).await }
         });
 
-        let registry = PendingUserActions::global();
-        let (id, prompt) = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let Some(message) = registry
-                    .pending_cards_for_session(&session_id)
-                    .into_iter()
-                    .next()
-                {
-                    if let Some(MessageContent::ActionRequired(action)) =
-                        message.content.into_iter().next()
-                    {
-                        if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
-                            id, prompt, ..
-                        } = action.data
-                        {
-                            return (id, prompt.unwrap_or_default());
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the file half must raise an approval card");
+        let (card, running) = approval_card(&session_id, running).await;
+        let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+            id, prompt, ..
+        } = card
+        else {
+            panic!("the parked card must be a tool confirmation: {card:?}");
+        };
+        let prompt = prompt.unwrap_or_default();
 
         assert!(
             !prompt.contains("YOUR last message"),
             "the model wrote this description: {prompt}"
         );
 
+        let registry = PendingUserActions::global();
         registry.resolve_in_session(
             &session_id,
             &id,
