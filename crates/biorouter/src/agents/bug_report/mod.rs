@@ -1134,7 +1134,7 @@ mod tests {
         });
 
         let registry = PendingUserActions::global();
-        let (id, request) = tokio::time::timeout(Duration::from_secs(10), async {
+        let card = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let pending: Vec<_> = registry
                     .pending_cards_for_session(&session_id)
@@ -1159,8 +1159,27 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("the file half must raise an approval card");
+        .await;
+
+        // ⚠ A bare `Elapsed` says only that no card arrived, which is the same
+        // observation whether the handler is slow or returned early — and this
+        // test failed three times on windows-latest saying exactly that, while
+        // passing everywhere else. So on a timeout, ASK THE HANDLER what it did
+        // rather than reporting the silence. Its result names the branch it took
+        // (a privacy refusal, a store read that failed, an invalid-params exit),
+        // which is the thing a remote runner otherwise cannot tell you.
+        let (id, request) = match card {
+            Ok(found) => found,
+            Err(_) => {
+                let outcome = tokio::time::timeout(Duration::from_secs(5), running).await;
+                panic!(
+                    "the file half must raise an approval card; no card arrived within 10s. \n\
+                     The handler's own outcome was: {outcome:#?}\n\
+                     (an Ok(..) here means it RETURNED instead of parking — read its text; \n\
+                     a timeout here means it is genuinely still running.)"
+                );
+            }
+        };
 
         let (tool_name, arguments, prompt) = request;
         assert_eq!(tool_name, REPORT_BUG_TOOL_NAME);
