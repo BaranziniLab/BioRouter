@@ -4187,6 +4187,14 @@ mod tests {
     /// the delete fail: `list_pages` refuses a path that escapes the base
     /// (`ensure_existing_path_confined`), while the staged rename and the
     /// removal that follow it only ever touch the link, not its target.
+    ///
+    /// ⚠ `#[cfg(unix)]` because the FIXTURE is POSIX, not because the behaviour
+    /// is: `std::os::unix::fs::symlink` does not exist on Windows, where a
+    /// symlink needs either developer mode or an elevated process. The rule it
+    /// pins — an unreadable tree is `None` — holds on every platform, and the
+    /// `.ok()` that implements it is not gated. Same lesson as the 25 POSIX
+    /// fixtures in `security::sensitive_ops`: gate the fixture, never the rule.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_page_tree_reports_an_unknown_count_not_zero() {
         let (srv, _tmp, root) = migrated_server_with_bases(&["scratch"]);

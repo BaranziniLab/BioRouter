@@ -1888,6 +1888,22 @@ impl ToolInspector for SensitiveOpsInspector {
     // re-plumbing the inspector list.
 }
 
+/// ⚠ WHY 25 TESTS BELOW ARE `#[cfg(not(target_os = "windows"))]`.
+///
+/// They spell their fixtures as POSIX command lines — `rm -rf <path>` — and
+/// assert what the POSIX arm of [`is_recursive_delete`] does with them. On
+/// Windows that assertion is about a command that is never parsed: production
+/// picks the dialect with `Platform::default_dialect()`, which is
+/// `Dialect::PowerShell` there, and PowerShell reads `rm` as an alias of
+/// `Remove-Item` whose recursive switch is `-Recurse`, not `-rf`. So the parser
+/// correctly finds no recursive delete, every one of those tests fails, and the
+/// failure is the FIXTURE being POSIX rather than the gate being broken.
+///
+/// This was mis-diagnosed once already, so it is worth stating plainly: these
+/// failures are NOT evidence that the recursive-delete gate is inert on
+/// Windows. The Windows path through this criterion is `Remove-Item -Recurse`,
+/// and it needs its own fixtures rather than a `cfg` — that is a real coverage
+/// gap and it is tracked, but it is a gap in the TESTS, not in the gate.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3102,6 +3118,7 @@ record_result("ok");"#;
         command_history(id, &format!("mkdir -p {}", path.display()), true)
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn recursive_delete_of_a_pre_existing_non_empty_directory_asks() {
         let scratch = Scratch::new();
@@ -3120,6 +3137,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The fixture is a repository, and the session started before it existed —
     /// the shape a directory the session really did create arrives in. The `.git`
     /// is what keeps the provenance load-bearing: without it the age rule alone
@@ -3156,6 +3174,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The retry-escalation attack, and the reason provenance is corroborated
     /// against the filesystem: a model whose `rm -rf` was refused issues
     /// `mkdir -p <same path>` — which succeeds on an existing directory and
@@ -3193,6 +3212,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// Provenance is read off the *response* the agent wrote, not the request the
     /// model wrote: a creation that was refused at the approval prompt (or that
     /// failed) never happened, and vouches for nothing.
@@ -3227,6 +3247,7 @@ record_result("ok");"#;
         assert_eq!(shell_finding(&plain_command, &ok_session), None);
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// A refused delete must not be able to mint its own permission — the whole
     /// point of criterion 5 — and the one shape where the filesystem cannot say
     /// so is a repository whose every entry post-dates the session.
@@ -3277,6 +3298,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The provenance rule must not let a call vouch for *itself*: the incident
     /// arrived as `rm -rf X && mkdir X`, so reading the batch under inspection as
     /// history would have excused the very deletion it is meant to catch.
@@ -3307,6 +3329,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn recursive_delete_of_an_empty_directory_does_not_ask() {
         let scratch = Scratch::new();
@@ -3326,6 +3349,7 @@ record_result("ok");"#;
         assert!(shell_finding(&command, &session).is_some());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn a_missing_path_a_plain_file_and_a_symlink_do_not_ask() {
         let scratch = Scratch::new();
@@ -3355,6 +3379,7 @@ record_result("ok");"#;
         assert!(shell_finding(&format!("rm -rf {}", real.display()), &session).is_some());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The `cd`-then-relative shape the incident actually arrived in. Resolving
     /// against the session working directory instead would miss it entirely.
     #[test]
@@ -3379,6 +3404,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// A target that holds a git repository is escalated on that evidence alone —
     /// here the session start is *now*, so the age heuristic says every file is
     /// the session's own work and only the `.git` speaks. Destroying history is
@@ -3398,6 +3424,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The same fixture, with the session on record as having created it: a repo
     /// the agent cloned or initialised itself is its own work, and tearing it
     /// down must stay silent.
@@ -3429,6 +3456,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The false-positive guard the rule lives or dies by. An agent in Auto mode
     /// clears build output constantly; a prompt on every one of these would get
     /// Auto mode switched off, which is a worse outcome than the hole.
@@ -3457,6 +3485,7 @@ record_result("ok");"#;
         assert!(shell_finding(&format!("rm -rf {}", user_work.display()), &session).is_some());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// …but a repository is never build output, whatever it is called.
     #[test]
     fn a_regenerable_name_holding_a_repository_still_asks() {
@@ -3469,6 +3498,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// Content the session itself produced is not the user's work: a tree built
     /// and torn down inside one session must never prompt.
     #[test]
@@ -3495,6 +3525,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// A glob destroys strictly more than the single path beside it, so it must
     /// not be the one shape that walks through. The shell expands it before `rm`
     /// runs, so the criterion grades the containing directory instead.
@@ -3516,6 +3547,7 @@ record_result("ok");"#;
         }
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// …and it inherits every exemption the named target has, so the fail-closed
     /// rule does not become the prompt that gets Auto mode switched off.
     #[test]
@@ -3544,6 +3576,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The temp trees stay scratch space, exactly as they are for criteria 1-4.
     #[test]
     fn a_recursive_delete_inside_a_temp_tree_does_not_ask() {
@@ -3569,6 +3602,7 @@ record_result("ok");"#;
         );
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn reads_of_an_established_directory_never_escalate() {
         let scratch = Scratch::new();
@@ -3587,6 +3621,7 @@ record_result("ok");"#;
         assert!(shell_finding(&format!("rm -rf {}", victim.display()), &session).is_some());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// A non-recursive delete destroys nothing this criterion is about: `rm -f`
     /// on a directory fails, and `rmdir` refuses a non-empty one.
     #[test]
@@ -3606,6 +3641,7 @@ record_result("ok");"#;
         assert!(shell_finding(&format!("rm -rf {}", victim.display()), &session).is_some());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn every_recursive_flag_spelling_is_detected() {
         let scratch = Scratch::new();
@@ -3628,6 +3664,7 @@ record_result("ok");"#;
         }
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// `--` ends option parsing, so a *file* named `-rf` after it is an operand
     /// and the command is not recursive at all.
     /// Real paths have spaces in them. The tokenizer strips the quoting before
@@ -3653,6 +3690,7 @@ record_result("ok");"#;
         }
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     #[test]
     fn a_dashed_operand_after_the_end_of_options_is_not_a_recursive_flag() {
         let scratch = Scratch::new();
@@ -3805,6 +3843,7 @@ record_result("ok");"#;
         assert!(directory_creation_targets("git init", &env).is_empty());
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The `execute_code` path: an embedded delete reaches the same rule, because
     /// a script's inner tool calls never pass an agent-layer inspector.
     #[test]
@@ -3847,6 +3886,7 @@ record_result("ok");"#;
         }
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// The incident, end to end: the exact command, in the exact mode, now
     /// produces an approval request naming what it would destroy.
     #[tokio::test]
@@ -3887,6 +3927,7 @@ record_result("ok");"#;
         assert_eq!(result.inspector_name, SENSITIVE_OPS_INSPECTOR_NAME);
     }
 
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
     /// Gate (c) for criterion 5: every non-Auto mode stays inert, for every
     /// spelling — the same early return that keeps criteria 1-4 out of them.
     #[tokio::test]

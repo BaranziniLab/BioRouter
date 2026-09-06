@@ -7053,7 +7053,12 @@ impl Agent {
                     request_id,
                     Err(ErrorData::new(
                         ErrorCode::INVALID_REQUEST,
-                        "Filing a bug report needs a person to approve the exact text before                          it is published, and this Biorouter cannot ask one — it is running                          without a way to prove a human acted (a `biorouter serve` daemon,                          for instance). Nothing was filed and nothing was analysed. Tell the                          user to report it from the desktop app, or at                          https://github.com/BaranziniLab/biorouter/issues/new."
+                        "Filing a bug report needs a person to approve the exact text \
+                         before it is published, and this Biorouter cannot ask one — it \
+                         is running without a way to prove a human acted (a `biorouter \
+                         serve` daemon, for instance). Nothing was filed and nothing was \
+                         analysed. Tell the user to report it from the desktop app, or \
+                         at https://github.com/BaranziniLab/biorouter/issues/new."
                             .to_string(),
                         None,
                     )),
