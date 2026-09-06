@@ -39,7 +39,15 @@ use biorouter_mcp::knowledge::{manifest, okf, paths, registry, tier};
 use fs2::FileExt as _;
 use sha2::{Digest as _, Sha256};
 
-pub const SOUL_KB_ID: &str = "soul";
+/// The shipped base's id.
+///
+/// ⚠ Defined AS `biorouter-mcp`'s own constant rather than beside it. This
+/// module is the seeder — `ensure_soul` creates the base with this id — and
+/// `KnowledgeServer::kb_delete_base` refuses `service::DEFAULT_PRIMARY_KB_ID`.
+/// Two `"soul"` literals in two crates with nothing pinning them equal meant a
+/// rename on either side would leave the built-in base deletable by an agent,
+/// silently, with every test still green.
+pub const SOUL_KB_ID: &str = biorouter_mcp::knowledge::service::DEFAULT_PRIMARY_KB_ID;
 pub const SOUL_KB_NAME: &str = "Soul";
 pub const MEDITATION_WORKFLOW_FILE: &str = "meditation.yaml";
 /// Job ids double as on-disk filenames in the scheduler, so the id stays a
