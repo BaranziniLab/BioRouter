@@ -10,8 +10,35 @@ pub enum DecodeError {
     AllMethodsFailed,
 }
 
+/// Render a workflow as a shareable link.
+///
+/// ⚠ The extensions are REDACTED on the way out, and this is the choke point
+/// that makes that true everywhere. A deeplink is the one artefact in this
+/// system whose whole purpose is to leave the machine — it is mailed, pasted
+/// into chat, put in a ticket — and `ExtensionConfig` carries resolved
+/// connector auth: `StreamableHttp` holds `headers` (a `Bearer` typed into
+/// Settings → Extensions is stored verbatim, never keyring-migrated), `Stdio`
+/// holds `envs`, and both hold locators that can embed credentials in userinfo.
+///
+/// The same projection `workflow::service::session_enrichment` applies to a
+/// *generated* workflow, applied here as well because generation is not the
+/// only way a workflow acquires extensions: one hand-authored, imported, or
+/// written by the workflow builder reaches this function with whatever its file
+/// says. Redacting at the three call sites instead would be three chances to
+/// forget — and the encoder is the one place all of them pass through.
+///
+/// It costs the recipient nothing: a consumer re-enables an extension by
+/// matching its NAME against its own installed set, which is the only thing
+/// that could work on another machine anyway.
 pub fn encode(workflow: &Workflow) -> Result<String, serde_json::Error> {
-    let workflow_json = serde_json::to_string(workflow)?;
+    let mut workflow = workflow.clone();
+    workflow.extensions = workflow.extensions.map(|extensions| {
+        extensions
+            .iter()
+            .map(crate::agents::extension::ExtensionConfig::redacted_for_session_export)
+            .collect()
+    });
+    let workflow_json = serde_json::to_string(&workflow)?;
     let encoded = URL_SAFE_NO_PAD.encode(workflow_json.as_bytes());
     Ok(encoded)
 }
@@ -107,5 +134,79 @@ mod tests {
         let result = decode("invalid_base64!");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DecodeError::AllMethodsFailed));
+    }
+
+    /// A share link is the one artefact whose whole purpose is to leave the
+    /// machine, and `ExtensionConfig` carries resolved connector auth.
+    ///
+    /// ⚠ The credential does not have to have come from a generated workflow.
+    /// `service::session_enrichment` redacts what it captures, but a workflow
+    /// authored by hand, imported from someone else, or built in the workflow
+    /// builder arrives here with whatever its file says — so the projection has
+    /// to happen at the encoder, which is the one place the tool, the CLI and
+    /// the HTTP route all pass through.
+    #[test]
+    fn a_share_link_never_carries_connector_auth() {
+        let mut workflow = create_test_workflow();
+        workflow.extensions = Some(vec![
+            crate::agents::extension::ExtensionConfig::StreamableHttp {
+                name: "cdw".to_string(),
+                description: "Clinical Data Warehouse".to_string(),
+                uri: "https://cdw.example.org/mcp?token=sk-live-not-a-real-key".to_string(),
+                envs: Default::default(),
+                env_keys: vec![],
+                headers: std::collections::HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer ghs-not-a-real-token".to_string(),
+                )]),
+                timeout: None,
+                bundled: None,
+                available_tools: vec![],
+            },
+            crate::agents::extension::ExtensionConfig::Stdio {
+                name: "local".to_string(),
+                description: String::new(),
+                cmd: "/usr/local/bin/secret-tool".to_string(),
+                args: vec!["--api-key".to_string(), "hunter2hunter2".to_string()],
+                envs: Default::default(),
+                env_keys: vec![],
+                timeout: None,
+                bundled: None,
+                available_tools: vec![],
+            },
+        ]);
+
+        let encoded = encode(&workflow).expect("encodes");
+        let decoded_json = String::from_utf8(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&encoded)
+                .expect("valid base64"),
+        )
+        .expect("valid utf-8");
+
+        for secret in [
+            "Bearer ghs-not-a-real-token",
+            "sk-live-not-a-real-key",
+            "hunter2hunter2",
+            "/usr/local/bin/secret-tool",
+        ] {
+            assert!(
+                !decoded_json.contains(secret),
+                "`{secret}` rode the share link: {decoded_json}"
+            );
+        }
+
+        // The NAMES survive, because that is all a recipient needs: a consumer
+        // re-enables an extension by matching its name against its own
+        // installed set, which is the only thing that could work on another
+        // machine anyway.
+        let round_tripped = decode(&encoded).expect("decodes");
+        let names: Vec<String> = round_tripped
+            .extensions
+            .expect("extensions survive")
+            .iter()
+            .map(crate::agents::extension::ExtensionConfig::name)
+            .collect();
+        assert_eq!(names, vec!["cdw".to_string(), "local".to_string()]);
     }
 }
