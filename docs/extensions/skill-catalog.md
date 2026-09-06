@@ -192,6 +192,37 @@ deleting it. The root it deletes under is chosen from
 refused, which is what makes it safe for this handler to cover
 `~/.claude/skills` and a project directory as well as Biorouter's own.
 
+## What the model sees, and why it carries provenance (#168)
+
+`skills__searchSkills` returns a projection of the same catalog, one object per
+skill. Alongside `name`, `description` and `bundle` each row carries:
+
+| Field | Meaning |
+|---|---|
+| `builtin` | Biorouter seeded this skill and re-seeds it on every start. Same answer as the `builtin` on a catalog row. |
+| `source` | The kind of root it was discovered under — `biorouter`, `extension`, `claudeHome`, `agentsHome`, `project`. |
+| `extension` | The owning extension's directory name. Present only when `source` is `extension`. |
+| `removable` | Whether `removeSkillPackage` accepts this skill at all. |
+| `removalTarget` | The exact name to pass to `removeSkillPackage`. Present only when `removable`, and for a bundle member it is the **bundle**, not the skill. |
+
+⚠ **These are derived from the catalog, never from a second list of names.**
+`builtin` is `is_builtin_skill_name` — the very predicate the removal preflight
+asks — and `source` comes from `skill_catalog::roots()`. A hand-maintained copy
+is the thing that drifts.
+
+The projection used to stop at `bundle`, which left a caller no way to tell a
+package it may uninstall from one Biorouter ships or an extension supplies. Since
+`removeSkillPackage` validates the **whole** batch before removing anything, a
+single shipped name rejected all of them — and the rejection named one offender,
+so the only route to a valid batch was to re-send it once per offender. It now
+reports every rejected target grouped by reason **and** the targets that would
+have been removed, so one retry is enough. The all-or-nothing semantics are
+unchanged: a batch with any bad name still removes nothing.
+
+`removable` is false for everything outside Biorouter's own skills root, because
+that is the only root `removeSkillPackage` deletes under. An extension's skill is
+uninstalled by removing the extension.
+
 ## Debugging a skill that is installed but not usable
 
 1. `biorouter skill list` — if it is absent, discovery never saw it. Check the
