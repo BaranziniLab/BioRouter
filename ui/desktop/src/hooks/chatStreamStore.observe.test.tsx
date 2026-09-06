@@ -1435,3 +1435,77 @@ describe('ChatStreamController.observeSession: the reconnect backoff', () => {
     }
   });
 });
+
+describe('ChatStreamController.observeSession — the Stop gate (#166)', () => {
+  it('lets a LATER observed turn end while a stale Stop gate names an older one (#166)', async () => {
+    // Belt and braces for #166. `stopPending` is a single process-wide latch:
+    // a Stop whose cancel never resolves used to pin EVERY subsequent terminal
+    // frame at its running value, so the composer's working edge swept on over
+    // turns the stopped one had nothing to do with. Scoping the gate to the
+    // generation it was armed for bounds that to one turn.
+    //
+    // The observer is the reachable path for it: a driving submit is refused
+    // while the gate is armed, but the observed active turn advances on the
+    // server's own say-so.
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({ data: { session: session('stale-gate-observer') } });
+      // Never resolves: the gate stays armed for `turn-stopped` for good.
+      mocks.cancelTurn.mockReturnValue(
+        deferred<{ data: { cancelled: boolean; settled: boolean; continuation_lease: string } }>()
+          .promise
+      );
+
+      const controller = registry.getController('stale-gate-observer');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+
+      observed.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-stopped',
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+      void controller.stopStreaming();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.cancelTurn).toHaveBeenCalledTimes(1);
+      expect(mocks.cancelTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ expected_turn_id: 'turn-stopped' }),
+        })
+      );
+
+      // The server names a different, later turn as the active one...
+      observed.push({
+        type: 'TurnStarted',
+        turn_id: 'turn-much-later',
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // ...and THAT turn ending is not the stopped generation's business.
+      observed.push(
+        observerFrame(
+          { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent,
+          'turn-much-later',
+          1
+        )
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+      expect(isRunningState(controller.getSnapshot().chatState)).toBe(false);
+
+      controller.stopObserving();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

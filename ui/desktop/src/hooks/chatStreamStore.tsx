@@ -648,11 +648,27 @@ class ChatStreamController {
   /** Whether the request currently on the wire already acquired a continuation lease. */
   private stopInFlightContinuationPending = false;
   /**
-   * A Stop whose server barrier has not succeeded yet. Unlike `stopInFlight`,
-   * this survives a failed HTTP attempt so a terminal SSE frame cannot reopen
-   * submission without proof that the exact stopped turn released its slot.
+   * A Stop whose server barrier has not resolved yet, so a terminal SSE frame
+   * may not reopen submission without proof that the exact stopped turn
+   * released its slot.
+   *
+   * #166 — this is a bridge across the microtask race between a terminal frame
+   * and the cancel response, NOT a durable claim that the daemon is still
+   * running the turn. It is cleared as soon as the cancel request resolves,
+   * whichever way it resolved: see `settleStoppedTurn`, whose `finally` is the
+   * only reason a failed cancel can no longer pin the composer at "working"
+   * for the rest of the chat's life.
    */
   private stopPending = false;
+  /**
+   * The exact turn generation the current (or last unsettled) Stop named.
+   *
+   * It deliberately OUTLIVES `stopPending` on a failure, so a retry cancels the
+   * generation the user actually stopped instead of guessing at whatever is
+   * running now. `stopStreaming` prefers a live `activeTurnId` over it, and a
+   * new turn supersedes it outright, so it can never name a stale generation
+   * while a real one exists.
+   */
   private stopExpectedTurnId: string | null = null;
   /** Stop-and-Send intent, retained when the exact-generation cancel is retried. */
   private stopContinuationPending = false;
@@ -1684,7 +1700,11 @@ class ChatStreamController {
     // outliving the turn is the same bug in two shapes: a stale handle sends a
     // reopened tab attaching to a turn that is over, and a stale high-water mark
     // makes the NEXT turn's `seq: 0` look like a duplicate and swallows it.
-    if (!this.stopPending) this.retireActiveTurn();
+    //
+    // Sampled once, above the retirement, because `stopGateHolds()` reads
+    // `activeTurnId` and `retireActiveTurn()` clears it.
+    const stopGateHolds = this.stopGateHolds();
+    if (!stopGateHolds) this.retireActiveTurn();
 
     const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
     if (!error && timeSinceLastInteraction > 60000) {
@@ -1759,7 +1779,7 @@ class ChatStreamController {
       // A terminal frame can beat the cancel HTTP response by a few
       // microtasks. Keep the composer gated until that response confirms the
       // server-side turn slot has actually been released.
-      chatState: this.stopPending ? prev.chatState : ChatState.Idle,
+      chatState: stopGateHolds ? prev.chatState : ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
       // The turn it was aimed at is over; whether or not we saw the echo, there
@@ -2692,12 +2712,14 @@ class ChatStreamController {
       return;
     }
 
+    // Sampled before the retirement, for the reason `stopGateHolds()` documents.
+    const stopGateHolds = this.stopGateHolds();
     this.rememberRetiredObservedTurn(this.activeTurnId);
     this.retireActiveTurn();
     this.ambiguousRetryTurnId = null;
     this.updateSnapshot((prev) => ({
       ...prev,
-      chatState: this.stopPending ? prev.chatState : ChatState.Idle,
+      chatState: stopGateHolds ? prev.chatState : ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
       pendingSteer: undefined,
@@ -2782,6 +2804,12 @@ class ChatStreamController {
     this.seqTurnId = turnId;
     this.lastAppliedSeq = -1;
     this.reattachesThisTurn = 0;
+    // #166 — a new turn supersedes the generation a previous failed Stop kept
+    // naming for its retry. Without this the retained id survives past the turn
+    // it belonged to and a much later Stop-and-Send, made with nothing running,
+    // would cancel a generation that has been dead for several turns.
+    this.stopExpectedTurnId = null;
+    this.stopContinuationPending = false;
 
     try {
       // The transcript paints before the agent's model + extensions are up, so
@@ -3159,6 +3187,26 @@ class ChatStreamController {
     }
   };
 
+  /**
+   * Whether the Stop gate still speaks for the turn that is ending right now.
+   *
+   * #166 belt-and-braces. `stopPending` alone is a process-wide latch: any path
+   * that arms it and then fails to resolve pins EVERY later terminal frame at
+   * its running value, which is the composer's working edge sweeping forever
+   * over a finished chat. Scoping it to the generation it was armed for bounds
+   * that blast radius to one turn — a terminal frame for a different, later
+   * turn always returns to Idle, whatever the latch says.
+   *
+   * Evaluate this BEFORE `retireActiveTurn()`: retiring nulls `activeTurnId`,
+   * and a null there reads as "cannot disprove the gate", so a check made
+   * afterwards answers the opposite of one made before.
+   */
+  private stopGateHolds(): boolean {
+    if (!this.stopPending) return false;
+    if (!this.stopExpectedTurnId || !this.activeTurnId) return true;
+    return this.stopExpectedTurnId === this.activeTurnId;
+  }
+
   private requestExactTurnSettlement = async (
     turnId: string,
     continuationPending: boolean
@@ -3255,9 +3303,31 @@ class ChatStreamController {
     stoppedTurnId: string,
     requestContinuationPending: boolean
   ): Promise<boolean> => {
-    if (!(await this.requestExactTurnSettlement(stoppedTurnId, requestContinuationPending))) {
-      return false;
+    let settled = false;
+    try {
+      settled = await this.requestExactTurnSettlement(stoppedTurnId, requestContinuationPending);
+    } finally {
+      // #166 — the gate exists to bridge the microtask race between a terminal
+      // SSE frame and the cancel response. Once that response has resolved the
+      // race is over, whichever way it went, and holding the gate past it buys
+      // nothing: a Stop whose cancel timed out or came back unconfirmed used to
+      // latch `stopPending` true for the rest of the chat's life, so every
+      // later terminal frame left `chatState` pinned at its running value. The
+      // composer's working edge swept on over a finished turn and the composer
+      // never offered Send again — the whole of #166.
+      //
+      // A `finally` rather than a branch on `settled`, so no early return added
+      // here later can reintroduce the strand.
+      //
+      // `stopExpectedTurnId` and `stopContinuationPending` are deliberately NOT
+      // cleared: they are the memory a retry needs to name the exact generation
+      // the user stopped (and their Stop-and-Send intent), and dropping them
+      // would turn a retry into a session-only cancel that fails closed. They
+      // are superseded by a live turn rather than by this failure — see
+      // `stopStreaming` and `submitPreparedMessage`.
+      this.stopPending = false;
     }
+    if (!settled) return false;
 
     this.activeStreamId += 1;
     this.abortController?.abort();
@@ -3333,7 +3403,12 @@ class ChatStreamController {
     const observedLookupStop = this.stopAfterObservedLookup(continuationPending);
     if (observedLookupStop) return observedLookupStop;
 
-    if (!this.stopPending && !this.activeTurnId) {
+    // A live turn always outranks the generation a previous failed Stop named;
+    // the retained id only speaks when nothing is running, which is exactly the
+    // retry-after-a-failed-cancel case (#166).
+    const targetTurnId = this.activeTurnId ?? this.stopExpectedTurnId;
+
+    if (!this.stopPending && !targetTurnId) {
       // An ordinary Stop may have settled in the microtask immediately before
       // Stop-and-Send. The daemon retains that exact generation specifically so
       // this second admission can acquire the continuation lease without
@@ -3348,9 +3423,15 @@ class ChatStreamController {
     }
 
     if (!this.stopPending) {
+      // Retrying the retained generation carries the original Stop-and-Send
+      // intent forward; naming a live turn is a fresh Stop and takes only the
+      // intent of this call, so a stale `true` cannot make an ordinary Stop
+      // acquire a continuation lease nobody asked for.
+      const retryingRetainedGeneration = !this.activeTurnId && !!this.stopExpectedTurnId;
       this.stopPending = true;
-      this.stopExpectedTurnId = this.activeTurnId;
-      this.stopContinuationPending = continuationPending;
+      this.stopExpectedTurnId = targetTurnId;
+      this.stopContinuationPending =
+        continuationPending || (retryingRetainedGeneration && this.stopContinuationPending);
     } else if (continuationPending) {
       this.stopContinuationPending = true;
     }
