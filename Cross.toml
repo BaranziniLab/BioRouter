@@ -22,6 +22,20 @@ pre-build = [
 [target.x86_64-unknown-linux-gnu]
 xargo = false
 pre-build = [
+    # ⚠ Debian 11 (bullseye) has passed its LTS end, so `deb.debian.org` no
+    # longer serves the -security pool for it: `libssl1.1` and `linux-libc-dev`
+    # 404 and the whole install aborts. The packages are on archive.debian.org.
+    #
+    # The image pin is NOT the thing to change here. `LINUX_RUST_IMG` is
+    # bullseye on purpose — it is what holds the GLIBC_2.31 floor that Debian 11
+    # / Ubuntu 22.04 / Rocky 9 users depend on, and `assert_glibc_floor` fails
+    # the build if it moves. Repointing apt keeps the floor and fixes the fetch.
+    #
+    # Archived Release files are past their Valid-Until, hence the override.
+    """\
+    sed -i 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g; s|http://security.debian.org|http://archive.debian.org|g' /etc/apt/sources.list && \
+    printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99no-check-valid-until
+    """,
     """\
     apt-get update && apt-get install -y \
      curl \
