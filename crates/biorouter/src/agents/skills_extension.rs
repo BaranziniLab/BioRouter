@@ -33,7 +33,7 @@ pub static EXTENSION_NAME: &str = "skills";
 const SKILL_OPERATION_GUIDANCE: &[(&str, &str)] = &[
     (
         "searchSkills",
-        "searchSkills lists installed skills, or filters them when you pass a query",
+        "searchSkills lists installed skills, or filters them when you pass a query, and marks each one removable or not",
     ),
     ("loadSkill", "loadSkill reads an exact installed skill"),
     (
@@ -50,7 +50,7 @@ const SKILL_OPERATION_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "removeSkillPackage",
-        "removeSkillPackage removes one or several installed packages after full-batch validation",
+        "removeSkillPackage removes one or several installed packages after full-batch validation that names every rejected target at once",
     ),
     (
         "setSkillEnabled",
@@ -660,11 +660,40 @@ pub struct Skill {
     pub source_root: PathBuf,
 }
 
+/// One row of the `searchSkills` page.
+///
+/// ⚠ **The provenance fields are not decoration** (#168). Projecting only
+/// name/description/bundle threw away the two answers a caller needs before it
+/// can act on the list: whether Biorouter shipped this skill, and what name
+/// `removeSkillPackage` would take for it. Without them a model builds a
+/// removal batch out of skill names, the all-or-nothing preflight rejects the
+/// whole batch on the first shipped one, and the only way to find the rest is
+/// to re-send the batch once per offender.
+///
+/// Every field is DERIVED — from the catalog's own root list and from
+/// [`is_builtin_skill_name`], the same predicate the removal preflight asks.
+/// None of it is a second hand-maintained list of names, because a second list
+/// is what drifts.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SkillCatalogItem {
     name: String,
     description: String,
     bundle: Option<String>,
+    /// Biorouter put this skill on disk and re-seeds it on startup, so
+    /// `removeSkillPackage` refuses it however it is spelled.
+    builtin: bool,
+    /// Which kind of skills root it was discovered under.
+    source: skill_catalog::SkillSourceKind,
+    /// The owning extension's directory name, when `source` is `extension`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extension: Option<String>,
+    /// Would `removeSkillPackage` accept this skill at all?
+    removable: bool,
+    /// The exact name to pass to `removeSkillPackage`, present only when
+    /// `removable`. For a bundle member this is the BUNDLE, not the skill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removal_target: Option<String>,
 }
 
 /// Where a `SkillsClient` reads its skills from.
@@ -1353,11 +1382,54 @@ impl SkillsClient {
         }
     }
 
-    fn catalog_item(skill: &Skill) -> SkillCatalogItem {
+    /// The name `removeSkillPackage` takes for this skill, before the
+    /// removability tests below.
+    ///
+    /// ⚠ **A bundle member's removal target is its BUNDLE.** A package is
+    /// installed and removed as one directory, so the member's own name matches
+    /// no package and `removeSkillPackage` answers "no package named `x` is
+    /// installed" — the second way #168's batch could fail after the first was
+    /// fixed.
+    ///
+    /// `None` when the directory name is not one `sanitize_package_id` leaves
+    /// unchanged: the preflight sanitizes what it is given, so a directory
+    /// called `My Skill` would be looked up as `my-skill` and not found.
+    fn removal_target_of(skill: &Skill) -> Option<String> {
+        let target = match &skill.bundle_name {
+            Some(bundle) => bundle.clone(),
+            None => skill.directory.file_name()?.to_string_lossy().into_owned(),
+        };
+        (crate::agents::skill_package::sanitize_package_id(&target).as_deref() == Some(&target))
+            .then_some(target)
+    }
+
+    fn catalog_item(
+        skill: &Skill,
+        sources: &HashMap<PathBuf, skill_catalog::SkillSource>,
+    ) -> SkillCatalogItem {
+        let source = skill_catalog::source_in(sources, &skill.source_root);
+        let removal_target = Self::removal_target_of(skill);
+        // `removeSkillPackage` deletes a directory under the INSTALL root, so a
+        // skill discovered under any other root is not removable by it whatever
+        // its name — the preflight's own `root.join(name).is_dir()` reaches the
+        // same answer one step later, with a message ("no package named `x` is
+        // installed") that reads as a typo rather than as the wrong root.
+        // `SkillSourceKind::Biorouter` IS that root: both are
+        // `Paths::config_dir().join("skills")`, one via `roots()` and one via
+        // `skill_package::install::install_root`.
+        let removable = source.kind == skill_catalog::SkillSourceKind::Biorouter
+            && removal_target
+                .as_deref()
+                .is_some_and(|target| !is_shipped_entry_name(target));
         SkillCatalogItem {
             name: skill.metadata.name.clone(),
             description: skill.metadata.description.clone(),
             bundle: skill.bundle_name.clone(),
+            builtin: is_builtin_skill_name(&skill.metadata.name),
+            source: source.kind,
+            extension: source.extension,
+            removal_target: if removable { removal_target } else { None },
+            removable,
         }
     }
 
@@ -1890,11 +1962,14 @@ impl SkillsClient {
         let skills = self.skills.skills();
         let skill_list = Self::enabled_skill_entries(&skills, over);
         let total = skill_list.len();
+        // Once per page, not once per row: `roots()` walks the extensions
+        // directory and resolves the working directory.
+        let sources = skill_catalog::root_sources();
         let skills = skill_list
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(|(_, skill)| Self::catalog_item(skill))
+            .map(|(_, skill)| Self::catalog_item(skill, &sources))
             .collect();
 
         Self::catalog_response(total, offset, limit, skills)
@@ -1948,11 +2023,12 @@ impl SkillsClient {
         });
 
         let total = matches.len();
+        let sources = skill_catalog::root_sources();
         let skills = matches
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(|(_, skill)| Self::catalog_item(skill))
+            .map(|(_, skill)| Self::catalog_item(skill, &sources))
             .collect();
 
         Self::catalog_response(total, offset, limit, skills)
@@ -2259,25 +2335,90 @@ impl SkillsClient {
 
         let mut seen = BTreeSet::new();
         let mut targets = Vec::with_capacity(requested.len());
+        let mut invalid: Vec<String> = Vec::new();
+        let mut duplicated: Vec<String> = Vec::new();
+        let mut shipped: Vec<String> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+        // ⚠ Every arm CONTINUES. The loop used to `return Err` on the first bad
+        // name, which made a 14-name batch take 14 round trips to repair — one
+        // offender learned per rejection — and each of those rejections looked
+        // like the last one (#168). Validation is still complete before any
+        // removal, and a single rejection still removes nothing; what changed
+        // is only how much of the batch the caller is told about.
         for requested_name in requested {
-            let sanitized = crate::agents::skill_package::sanitize_package_id(&requested_name)
-                .ok_or_else(|| format!("`{requested_name}` is not a valid package name"))?;
+            let Some(sanitized) =
+                crate::agents::skill_package::sanitize_package_id(&requested_name)
+            else {
+                invalid.push(requested_name);
+                continue;
+            };
             if !seen.insert(sanitized.clone()) {
-                return Err(format!(
-                    "`{requested_name}` duplicates package `{sanitized}` in this batch"
-                ));
+                duplicated.push(sanitized);
+                continue;
             }
             if root == seeded_root && is_shipped_entry_name(&sanitized) {
-                return Err(format!(
-                    "`{sanitized}` ships with Biorouter and cannot be removed; hot-unload it for this conversation or disable its Context instead"
-                ));
+                shipped.push(sanitized);
+                continue;
             }
             if !root.join(&sanitized).is_dir() {
-                return Err(format!("no package named `{sanitized}` is installed"));
+                missing.push(sanitized);
+                continue;
             }
             targets.push(sanitized);
         }
-        Ok(targets)
+
+        let rejections: [(&str, &[String]); 4] = [
+            (
+                "ships with Biorouter and cannot be removed (hot-unload it for this conversation or disable its Context instead)",
+                &shipped,
+            ),
+            ("not installed", &missing),
+            ("not a valid package name", &invalid),
+            ("named more than once in this batch (list each target once)", &duplicated),
+        ];
+        if rejections.iter().all(|(_, names)| names.is_empty()) {
+            return Ok(targets);
+        }
+        Err(Self::removal_rejection_report(&targets, &rejections))
+    }
+
+    fn quoted_names(names: &[String]) -> String {
+        names
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// One rejection message naming **every** offending target grouped by
+    /// reason, plus every target that would have been removed — so the caller
+    /// can build a batch that works from this one reply instead of bisecting
+    /// its way there.
+    fn removal_rejection_report(removable: &[String], rejections: &[(&str, &[String])]) -> String {
+        let rejected: usize = rejections.iter().map(|(_, names)| names.len()).sum();
+        let mut text = format!(
+            "removeSkillPackage removed nothing. Rejected {rejected} of {} target(s):",
+            rejected + removable.len()
+        );
+        for (reason, names) in rejections {
+            if names.is_empty() {
+                continue;
+            }
+            text.push_str(&format!("\n  {reason}: {}", Self::quoted_names(names)));
+        }
+        if removable.is_empty() {
+            text.push_str("\n  Nothing in this batch is removable.");
+        } else {
+            text.push_str(&format!(
+                "\n  Would have been removed: {}. Call removeSkillPackage again with only those {} name(s).",
+                Self::quoted_names(removable),
+                removable.len()
+            ));
+        }
+        text.push_str(
+            "\n  searchSkills marks each skill `removable` and gives the exact `removalTarget` to pass here.",
+        );
+        text
     }
 
     fn installed_names_for_removal(root: &Path, target: &str) -> Vec<String> {
@@ -2576,8 +2717,16 @@ impl SkillsClient {
 
                     Pass `query` to match a name, description or bundle; omit it to page the
                     whole catalog alphabetically. Use this before loadSkill when you need a
-                    skill's exact name. Results are paginated and carry names and descriptions
-                    only.
+                    skill's exact name. Results are paginated.
+
+                    Each result also says where the skill came from and whether it can be
+                    uninstalled: `builtin` marks one Biorouter ships and re-seeds on startup,
+                    `source` is the kind of root it was discovered under (an `extension`
+                    result names the owning `extension`), and `removable` says whether
+                    removeSkillPackage accepts it at all. When it does, `removalTarget` is the
+                    exact name to pass — for a bundle member that is the bundle, not the
+                    skill. Build a removeSkillPackage batch out of `removalTarget` values;
+                    anything without one will reject the whole batch.
                 "#}
                 .to_string(),
                 Self::tool_input_schema::<SearchSkillsParams>(),
@@ -2719,6 +2868,11 @@ impl SkillsClient {
                     Every target is validated before the first removal: an invalid, missing,
                     duplicate, or Biorouter-shipped target rejects the whole batch without any
                     mutation. A valid batch returns one result per target.
+
+                    A rejection names every offending target grouped by reason, plus the ones
+                    that would have been removed, so a single retry is enough — do not bisect
+                    the batch. Take the names from searchSkills' `removalTarget` and leave out
+                    anything it does not mark `removable`.
 
                     This deletes files from disk and waits for the trusted desktop approval card
                     before the first deletion. A chat response cannot approve it.
@@ -4098,6 +4252,207 @@ Working dir biorouter content
             .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// #168: the `searchSkills` projection carried name/description/bundle and
+    /// nothing else, so no row said whether `removeSkillPackage` would accept
+    /// it. The only way to find out was to send a batch and read the refusal —
+    /// which, being all-or-nothing, removed nothing and named one offender.
+    ///
+    /// The three rows here are the three answers that were indistinguishable:
+    /// a package the user installed, a skill Biorouter seeds, and a skill that
+    /// arrived inside an installed extension.
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_skills_tells_shipped_extension_and_user_installed_skills_apart() {
+        let temp = TempDir::new().unwrap();
+        let _env =
+            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let installed = Paths::config_dir().join("skills");
+        let from_extension = Paths::config_dir().join("extensions/UCSFOMOPAgent/skills");
+        fs::create_dir_all(installed.join("my-package")).unwrap();
+        fs::create_dir_all(installed.join("about-biorouter")).unwrap();
+        fs::create_dir_all(from_extension.join("omop-phenotype-query")).unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let mut client = client_with(&["my-package"], &installed, session_manager);
+        {
+            let pinned = client.skills.pinned_mut();
+            pinned.insert(
+                "about-biorouter".to_string(),
+                fixture_skill("about-biorouter", &installed),
+            );
+            pinned.insert(
+                "omop-phenotype-query".to_string(),
+                fixture_skill("omop-phenotype-query", &from_extension),
+            );
+        }
+
+        // Pin every Context on, so the developer's own config cannot decide
+        // whether the shipped row is in the page at all.
+        let contexts_on: HashMap<String, String> = context_ids()
+            .map(|name| (context_config_key(name).to_uppercase(), "true".to_string()))
+            .collect();
+        let listed = crate::config::with_config_overrides(contexts_on, async {
+            client
+                .handle_list_skills(
+                    None,
+                    &crate::agents::session_skills::SessionSkillOverride::default(),
+                )
+                .await
+                .unwrap()
+        })
+        .await;
+        let page: serde_json::Value = serde_json::from_str(
+            &listed
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let row = |name: &str| -> serde_json::Value {
+            page["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|skill| skill["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is missing from {page:#}"))
+                .clone()
+        };
+
+        let user = row("my-package");
+        assert_eq!(user["builtin"], serde_json::json!(false));
+        assert_eq!(user["source"], serde_json::json!("biorouter"));
+        assert_eq!(user["removable"], serde_json::json!(true));
+        assert_eq!(
+            user["removalTarget"],
+            serde_json::json!("my-package"),
+            "a removable row must carry the exact name removeSkillPackage takes: {user:#}"
+        );
+        assert!(user.get("extension").is_none(), "{user:#}");
+
+        let shipped = row("about-biorouter");
+        assert_eq!(shipped["builtin"], serde_json::json!(true));
+        assert_eq!(shipped["removable"], serde_json::json!(false));
+        assert!(
+            shipped.get("removalTarget").is_none(),
+            "a shipped skill must advertise no removal target at all: {shipped:#}"
+        );
+
+        let supplied = row("omop-phenotype-query");
+        assert_eq!(
+            supplied["builtin"],
+            serde_json::json!(false),
+            "an extension's own skill is not one Biorouter ships: {supplied:#}"
+        );
+        assert_eq!(supplied["source"], serde_json::json!("extension"));
+        assert_eq!(
+            supplied["extension"],
+            serde_json::json!("UCSFOMOPAgent"),
+            "the owning extension is the whole answer to why this row cannot be uninstalled here"
+        );
+        assert_eq!(
+            supplied["removable"],
+            serde_json::json!(false),
+            "removeSkillPackage only deletes under the install root: {supplied:#}"
+        );
+    }
+
+    /// A bundle member's removal target is the BUNDLE's directory: a package is
+    /// installed and removed as one unit, so passing the member's own name
+    /// answers "no package named `x` is installed" — the second way #168's
+    /// batch could fail once the first was fixed.
+    #[test]
+    fn a_bundle_members_removal_target_is_its_bundle() {
+        let temp = TempDir::new().unwrap();
+        let mut member = fixture_skill("brainstorming", temp.path());
+        member.bundle_name = Some("superpowers".to_string());
+        member.directory = temp.path().join("superpowers/brainstorming");
+        assert_eq!(
+            SkillsClient::removal_target_of(&member).as_deref(),
+            Some("superpowers")
+        );
+
+        let flat = fixture_skill("my-package", temp.path());
+        assert_eq!(
+            SkillsClient::removal_target_of(&flat).as_deref(),
+            Some("my-package")
+        );
+
+        // The preflight sanitizes what it is handed, so a directory whose name
+        // does not survive sanitization would be looked up under a name that is
+        // not on disk. Better no target than a wrong one.
+        let mut unsanitary = fixture_skill("weird", temp.path());
+        unsanitary.directory = temp.path().join("Weird Skill");
+        assert_eq!(SkillsClient::removal_target_of(&unsanitary), None);
+    }
+
+    /// #168: the preflight validated the whole batch before removing anything —
+    /// correct — and then abandoned on the FIRST bad name. A 14-name batch
+    /// therefore cost one round trip per offender to repair, and every
+    /// rejection looked exactly like the one before it.
+    #[test]
+    fn a_rejected_removal_batch_names_every_offender_and_what_would_have_worked() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for installed in ["alpha-pack", "beta-pack"] {
+            fs::create_dir_all(root.join(installed)).unwrap();
+        }
+
+        let error = SkillsClient::preflight_removal_targets(
+            RemoveSkillPackageParams {
+                name: Some("about-biorouter".to_string()),
+                names: vec![
+                    "alpha-pack".to_string(),
+                    "develop-biorouter".to_string(),
+                    "beta-pack".to_string(),
+                    "knowledge-bases".to_string(),
+                    "never-installed".to_string(),
+                    "alpha-pack".to_string(),
+                    "***".to_string(),
+                ],
+            },
+            root,
+            root,
+        )
+        .unwrap_err();
+
+        for shipped in ["about-biorouter", "develop-biorouter", "knowledge-bases"] {
+            assert!(
+                error.contains(&format!("`{shipped}`")),
+                "one rejection must name all three shipped targets, and this one omits {shipped}: {error}"
+            );
+        }
+        assert!(error.contains("ships with Biorouter"), "{error}");
+        assert!(
+            error.contains("not installed") && error.contains("`never-installed`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("not a valid package name") && error.contains("`***`"),
+            "{error}"
+        );
+        assert!(error.contains("more than once"), "{error}");
+        assert!(
+            error.contains("Would have been removed: `alpha-pack`, `beta-pack`"),
+            "a caller cannot build a valid batch out of a rejection that does not say what survived: {error}"
+        );
+
+        // The promise the message makes: exactly those names, one retry, no
+        // bisection.
+        let retry = SkillsClient::preflight_removal_targets(
+            RemoveSkillPackageParams {
+                name: None,
+                names: vec!["alpha-pack".to_string(), "beta-pack".to_string()],
+            },
+            root,
+            root,
+        )
+        .unwrap();
+        assert_eq!(
+            retry,
+            vec!["alpha-pack".to_string(), "beta-pack".to_string()],
+            "the names the rejection promised must be exactly the ones a retry accepts"
+        );
     }
 
     #[tokio::test]

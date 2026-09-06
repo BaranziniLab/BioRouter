@@ -192,6 +192,36 @@ pub fn roots() -> Vec<SkillRoot> {
     roots
 }
 
+/// [`roots`] as a path → provenance lookup, so a caller projecting many skills
+/// pays for the root walk (a `read_dir` of the extensions directory and a
+/// `current_dir`) once instead of once per skill.
+pub fn root_sources() -> HashMap<PathBuf, SkillSource> {
+    root_sources_of(&roots())
+}
+
+fn root_sources_of(roots: &[SkillRoot]) -> HashMap<PathBuf, SkillSource> {
+    roots
+        .iter()
+        .map(|root| (root.path.clone(), root.source.clone()))
+        .collect()
+}
+
+/// The provenance of one discovered skill's `source_root`.
+///
+/// ⚠ **An unknown root reads as [`SkillSourceKind::Biorouter`]**, and that
+/// fallback is the reason this is a shared function rather than one copy per
+/// caller: [`SkillCatalog::source_of`] has always answered that way, and a
+/// second spelling of it would be free to answer differently. In production the
+/// fallback is unreachable — every `source_root` a skill carries came from
+/// [`roots`] — so it only ever decides what a test fixture over a temporary
+/// directory looks like.
+pub fn source_in(sources: &HashMap<PathBuf, SkillSource>, source_root: &Path) -> SkillSource {
+    sources
+        .get(source_root)
+        .cloned()
+        .unwrap_or_else(|| SkillSource::new(SkillSourceKind::Biorouter, None))
+}
+
 /// How one session deviates from the machine-wide answer for a given skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -442,10 +472,7 @@ impl SkillCatalog {
         let mut skills = skills_extension::SkillsClient::discover_skills_in_directories(&existing);
         skills_extension::add_missing_shipped_skills(&mut skills);
 
-        let root_sources: HashMap<PathBuf, SkillSource> = roots
-            .iter()
-            .map(|root| (root.path.clone(), root.source.clone()))
-            .collect();
+        let root_sources = root_sources_of(&roots);
 
         // Bundles are derived from the discovery result rather than from a
         // second directory walk, so a bundle can never contain a member the
@@ -530,10 +557,7 @@ impl SkillCatalog {
     }
 
     fn source_of(&self, source_root: &Path) -> SkillSource {
-        self.root_sources
-            .get(source_root)
-            .cloned()
-            .unwrap_or_else(|| SkillSource::new(SkillSourceKind::Biorouter, None))
+        source_in(&self.root_sources, source_root)
     }
 
     /// The catalog as one conversation sees it.
