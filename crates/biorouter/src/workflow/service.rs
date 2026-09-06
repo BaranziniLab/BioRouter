@@ -224,21 +224,21 @@ pub fn resolve_id(id: &str) -> Result<PathBuf> {
     let fresh = guard
         .as_ref()
         .is_some_and(|cached| cached.roots == root_fingerprint());
-    let mut rebuilt = false;
     if !fresh {
         rebuild_locked(&mut guard)?;
-        rebuilt = true;
     }
 
-    match guard.as_ref().and_then(|c| c.by_id.get(id)).cloned() {
-        // A cached path that no longer resolves: rebuild once and answer from
-        // the rebuilt map, so the caller sees today's tree rather than the
-        // snapshot's.
-        Some(path) if path.exists() => return Ok(path),
-        Some(_) if !rebuilt => rebuild_locked(&mut guard)?,
-        Some(_) => {}
-        None if !rebuilt => rebuild_locked(&mut guard)?,
-        None => {}
+    let hit = guard.as_ref().and_then(|c| c.by_id.get(id)).cloned();
+    if let Some(path) = hit.filter(|path| path.exists()) {
+        return Ok(path);
+    }
+    // Neither a live hit nor a fresh map. Rebuild once — for a cached path that
+    // no longer resolves AND for a miss — so the caller sees today's tree
+    // rather than the snapshot's. `fresh` is the guard because the only way to
+    // arrive here without having just rebuilt is to have passed the freshness
+    // check.
+    if fresh {
+        rebuild_locked(&mut guard)?;
     }
 
     match guard.as_ref().and_then(|c| c.by_id.get(id)) {

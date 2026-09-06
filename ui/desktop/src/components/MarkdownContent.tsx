@@ -191,7 +191,11 @@ const CodeBlock = memo(function CodeBlock({
               size="xs"
               onClick={handleRun}
               className="gap-1 text-[11px] text-text-muted hover:text-text-default"
-              title="Run in the terminal below"
+              title={
+                runOutcome === 'unavailable'
+                  ? 'The terminal below has exited, so nothing was sent'
+                  : 'Run in the terminal below'
+              }
             >
               {runOutcome === 'sent' ? (
                 <Check className="h-3 w-3" />
