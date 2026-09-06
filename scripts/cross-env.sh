@@ -93,6 +93,19 @@ cross_linux() {
     -w /usr/src/myapp "$LINUX_RUST_IMG" sh -c "
       set -e
       rustup target add x86_64-unknown-linux-gnu
+      # Debian 11 has passed its LTS end, so deb.debian.org no longer serves the
+      # bullseye -security pool: libssl1.1 and linux-libc-dev 404 and the whole
+      # install aborts. The image ships the fix already, commented out — its own
+      # snapshot.debian.org lines, pinned to a date. Snapshot keeps every version
+      # forever, so this is reproducible as well as merely working.
+      #
+      # DO NOT 'fix' this by bumping LINUX_RUST_IMG. Bullseye is what holds the
+      # GLIBC_2.31 floor that Debian 11 / Ubuntu 22.04 / Rocky 9 users depend on;
+      # a newer base makes apt succeed and silently raises the floor, and no
+      # smoke test in this repo runs on glibc old enough to notice.
+      # assert_glibc_floor is the only thing that would catch it.
+      sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
+      printf 'Acquire::Check-Valid-Until \"false\";\n' > /etc/apt/apt.conf.d/99no-check-valid-until
       dpkg --add-architecture amd64 && apt-get update -q
       apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
         protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64
