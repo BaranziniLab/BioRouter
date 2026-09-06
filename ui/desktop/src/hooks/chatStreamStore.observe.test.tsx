@@ -1454,7 +1454,10 @@ describe('ChatStreamController.observeSession — the Stop gate (#166)', () => {
       mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
       mocks.resumeAgent.mockResolvedValue({ data: { session: session('stale-gate-observer') } });
       // Never resolves: the gate stays armed for `turn-stopped` for good.
-      mocks.cancelTurn.mockReturnValue(deferred().promise);
+      mocks.cancelTurn.mockReturnValue(
+        deferred<{ data: { cancelled: boolean; settled: boolean; continuation_lease: string } }>()
+          .promise
+      );
 
       const controller = registry.getController('stale-gate-observer');
       void controller.observeSession();
@@ -1472,9 +1475,11 @@ describe('ChatStreamController.observeSession — the Stop gate (#166)', () => {
       void controller.stopStreaming();
       await vi.advanceTimersByTimeAsync(0);
       expect(mocks.cancelTurn).toHaveBeenCalledTimes(1);
-      expect(
-        (mocks.cancelTurn.mock.calls[0][0].body as Record<string, unknown>).expected_turn_id
-      ).toBe('turn-stopped');
+      expect(mocks.cancelTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ expected_turn_id: 'turn-stopped' }),
+        })
+      );
 
       // The server names a different, later turn as the active one...
       observed.push({
